@@ -1,0 +1,21 @@
+# Backup del historial del fork (large, ~44M) — no se versiona
+mangohud-fork-backup.bundle
+
+# Artefactos de build del fork MangoHud
+MangoHud/build/
+MangoHud/subprojects/packagecache/
+# deps vendidas por meson (los .wrap se versionan; los dirs se regeneran)
+MangoHud/subprojects/imgui-*/
+MangoHud/subprojects/implot-*/
+MangoHud/subprojects/spdlog-*/
+MangoHud/subprojects/Vulkan-Headers-*/
+objs/
+.meson-private/
+meson-logs/
+
+# layer-test: throwaway sanity checks con paths absolutos del sistema
+layer-test/
+
+# Misc
+*.log
+.DS_Store

@@ -1,0 +1,148 @@
+#!/usr/bin/env sh
+# mangoverlay -- loads the MangoHud fork (unified overlay) as a Vulkan layer
+#
+# Steam usage (Launch Options), per-game:
+#   /home/Axforzi/Programas/overlay/mangoverlay %command%
+#
+# or stacked with other wrappers (e.g. goverlay bgmod):
+#   /home/Axforzi/Programas/overlay/mangoverlay /home/Axforzi/.local/share/goverlay/gameconfig/Batman_\ Arkham\ Knight/bgmod %command%
+#
+# Mechanism: the layer lives in ~/.local/share/vulkan/implicit_layer.d/
+#   MangoHud_overlay_unified.json  (VK_LAYER_MANGOHUD_overlay_unified_x86_64)
+# and activates only when MANGOHUD_UNIFIED=1. It therefore does NOT shadow
+# the system MangoHud: different name + its own per-game trigger.
+#
+# Note: it does not use VK_LAYER_PATH/VK_INSTANCE_LAYERS because Proton's
+# container (pressure-vessel) does not propagate them; plain vars do.
+
+# Enable OUR implicit layer (unique name)
+export MANGOHUD_UNIFIED=1
+# Kill the SYSTEM implicit layer (avoids double HUD) ONLY for this game
+export DISABLE_MANGOHUD=1
+
+# --- Per-game env vars (goverlay style) -----------------------------------
+# Reads ~/.config/lsfg-vk/env.conf (INI: one section per game, e.g.
+# [GenshinImpact.exe]; there is NO [global] section by design: env vars are
+# ALWAYS per-game so a var that breaks one game never leaks into the others).
+# The vars are exported BEFORE launching the game; if one breaks startup, set
+# disable_all_vars=true in the game section and retry: the game launches
+# without any vars.
+#
+# Game matching:
+#   1. Explicit override: MANGOVERLAY_SECTION=<name> shell env var.
+#   2. STEAM_COMPAT_APP_NAME set by Steam for Proton games (tried as-is and
+#      with the .exe suffix when it does not match).
+#   3. Basename of the command's first executable (.exe stripped/kept and
+#      both are tried as-is and without the suffix).
+
+ENV_CONF="${MANGOVERLAY_ENV_CONF:-$HOME/.config/lsfg-vk/env.conf}"
+
+# Exports a "KEY=VALUE" pair; values with spaces or quotes are cleaned. The
+# disable_all_vars flag is skipped (it is not an env var).
+env_export_one() {
+   _pair="$1"
+   _key="${_pair%%=*}"
+   _val="${_pair#*=}"
+   # trim key and value ends BEFORE any check (inner value spaces are kept)
+   _key=$(printf '%s' "$_key" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+   _val=$(printf '%s' "$_val" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+   [ -z "$_key" ] && return
+   [ "$_key" = "disable_all_vars" ] && return
+   # pre-wrapper flags (gamemoderun / game-performance): mangoverlay runs
+   # them as wrappers, NEVER as exported env vars
+   [ "$_key" = "gamemode" ] && return
+   [ "$_key" = "game-performance" ] && return
+   # strip surrounding quotes from the value
+   case "$_val" in
+      \"*\") _val=${_val#\"}; _val=${_val%\"} ;;
+   esac
+   # do not export empty keys
+   [ -z "$_val" ] && return
+   export "$_key=$_val"
+}
+
+env_section_lines() {
+   _sec="$1"
+   awk -v sec="$_sec" '
+      BEGIN { in_sec = 0 }
+      /^\[/ { in_sec = ($0 == "[" sec "]") }
+      in_sec && /^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/ { print }
+   ' "$ENV_CONF"
+}
+
+# Detects the section name to use (returns the .exe suffix when it matches
+# the lsfg profile, or the name as-is).
+detect_section() {
+   # 1. explicit override
+   if [ -n "${MANGOVERLAY_SECTION:-}" ]; then
+      printf '%s\n' "$MANGOVERLAY_SECTION"
+      return
+   fi
+   # 2. Steam Proton
+   if [ -n "${STEAM_COMPAT_APP_NAME:-}" ]; then
+      if grep -q "^\[${STEAM_COMPAT_APP_NAME}\]$" "$ENV_CONF" 2>/dev/null; then
+         printf '%s\n' "${STEAM_COMPAT_APP_NAME}"
+         return
+      fi
+      if grep -q "^\[${STEAM_COMPAT_APP_NAME}.exe\]$" "$ENV_CONF" 2>/dev/null; then
+         printf '%s\n' "${STEAM_COMPAT_APP_NAME}.exe"
+         return
+      fi
+   fi
+   # 2b. numeric SteamAppId (same rule as lsfg-vk)
+   if [ -n "${SteamAppId:-}" ] && grep -q "^\[${SteamAppId}\]$" "$ENV_CONF" 2>/dev/null; then
+      printf '%s\n' "$SteamAppId"
+      return
+   fi
+   # 3. basename of the command's first executable
+   _cmd=$(basename -- "$1" 2>/dev/null)
+   [ -z "$_cmd" ] && return
+   if grep -q "^\[${_cmd}\]$" "$ENV_CONF" 2>/dev/null; then
+      printf '%s\n' "$_cmd"
+      return
+   fi
+   _noexe=${_cmd%.exe}
+   if [ "$_noexe" != "$_cmd" ] && grep -q "^\[${_noexe}\]$" "$ENV_CONF" 2>/dev/null; then
+      printf '%s\n' "$_noexe"
+      return
+   fi
+   printf '%s\n' "$_cmd"
+}
+
+if [ -f "$ENV_CONF" ]; then
+   SECTION="$(detect_section "$1")"
+   if [ -n "$SECTION" ]; then
+      # if the game section has disable_all_vars, export nothing from it
+      _sec_off="$(env_section_lines "$SECTION" | awk -F= '/^disable_all_vars[[:space:]]*=[[:space:]]*[Tt]rue/ { print "1"; exit }')"
+      if [ "$_sec_off" != "1" ]; then
+         IFS_SAVE=$IFS
+         IFS='
+'
+         for _line in $(env_section_lines "$SECTION"); do
+            [ -n "$_line" ] && env_export_one "$_line"
+         done
+         IFS=$IFS_SAVE
+
+         # goverlay tweaks that are NOT env vars: flags wrapping the command.
+         # gamemode -> gamemoderun; game-performance (cachyos). Used only when
+         # the binary exists; silently ignored otherwise.
+         _has_gamemode="$(env_section_lines "$SECTION" | \
+            awk -F= '/^gamemode[[:space:]]*=[[:space:]]*1$/ { print "1"; exit }')"
+         _has_gameperf="$(awk -v sec="$SECTION" '
+            BEGIN { in_sec = 0 }
+            /^\[/ { in_sec = ($0 == "[" sec "]") }
+            in_sec && /^game-performance[[:space:]]*=[[:space:]]*1$/ { print "1"; exit }
+         ' "$ENV_CONF")"
+         [ "$_has_gamemode" = "1" ] && command -v gamemoderun >/dev/null 2>&1 && EXEC_WRAPPER=gamemoderun
+         if [ "$_has_gameperf" = "1" ] && command -v game-performance >/dev/null 2>&1; then
+            EXEC_WRAPPER=game-performance
+         fi
+      fi
+   fi
+fi
+
+if [ -n "${EXEC_WRAPPER:-}" ] && command -v "$EXEC_WRAPPER" >/dev/null 2>&1; then
+   exec "$EXEC_WRAPPER" "$@"
+fi
+
+exec "$@"

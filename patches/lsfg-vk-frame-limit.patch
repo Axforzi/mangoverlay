@@ -1,0 +1,134 @@
+diff --git a/lsfg-vk-config/include/lsfg-vk-utils/config.hpp b/lsfg-vk-config/include/lsfg-vk-utils/config.hpp
+index 8b46ae5..a030d24 100644
+--- a/lsfg-vk-config/include/lsfg-vk-utils/config.hpp
++++ b/lsfg-vk-config/include/lsfg-vk-utils/config.hpp
+@@ -71,6 +71,7 @@ namespace lsfgvk::utils {
+         uint32_t multiplier{2};
+         float flowScale{1.0F};
+         bool performanceMode{false};
++        uint32_t frameLimit{0}; //!< Max frames per second presented by the game (0 = disabled)
+ 
+         ColorSpace colorSpace{ColorSpace::sRGB};
+         TransferFunction transferFunction{TransferFunction::sRGB};
+diff --git a/lsfg-vk-config/src/config.cpp b/lsfg-vk-config/src/config.cpp
+index b56df0f..9618706 100644
+--- a/lsfg-vk-config/src/config.cpp
++++ b/lsfg-vk-config/src/config.cpp
+@@ -94,6 +94,9 @@ Configuration utils::getOrDefault() {
+         const char* performanceMode{std::getenv("LSFGVK_PERFORMANCE_MODE")};
+         if (performanceMode && *performanceMode != '\0')
+             profile.performanceMode = std::string(performanceMode) == "1";
++        const char* frameLimit{std::getenv("LSFGVK_FRAME_LIMIT")};
++        if (frameLimit && *frameLimit != '\0')
++            profile.frameLimit = static_cast<uint32_t>(std::stoul(frameLimit));
+ 
+         const char* colorSpace{std::getenv("LSFGVK_COLOR_SPACE")};
+         if (colorSpace && *colorSpace != '\0')
+@@ -264,6 +267,8 @@ Configuration utils::readConfig(const std::filesystem::path& path) {
+                 profile.flowScale = get<float>(key, value);
+             else if (key == "performance_mode")
+                 profile.performanceMode = get<bool>(key, value);
++            else if (key == "frame_limit")
++                profile.frameLimit = get<uint32_t>(key, value);
+             else if (key == "color_space")
+                 profile.colorSpace = parseColorSpace(get<std::string>(key, value));
+             else if (key == "transfer_function")
+@@ -318,6 +323,7 @@ void utils::writeConfig(const std::filesystem::path& path, const Configuration&
+         profileTbl.insert("multiplier", static_cast<int64_t>(profile.multiplier));
+         profileTbl.insert("flow_scale", profile.flowScale);
+         profileTbl.insert("performance_mode", profile.performanceMode);
++        profileTbl.insert("frame_limit", static_cast<int64_t>(profile.frameLimit));
+         profileTbl.insert("color_space", toString(profile.colorSpace));
+         profileTbl.insert("transfer_function", toString(profile.transferFunction));
+         profileTbl.insert("pacing_mode", toString(profile.pacingMode));
+diff --git a/lsfg-vk-layer/src/hooks.cpp b/lsfg-vk-layer/src/hooks.cpp
+index b7975a6..08b6f42 100644
+--- a/lsfg-vk-layer/src/hooks.cpp
++++ b/lsfg-vk-layer/src/hooks.cpp
+@@ -61,6 +61,7 @@ layer::Layer::Layer() : m_configuration(utils::getOrDefault()) {
+     LOG(Info) << "  Flow scale: "<< std::fixed << std::setprecision(2)
+         << this->m_profile.flowScale;
+     LOG(Info) << "  Performance mode: " << (this->m_profile.performanceMode ? "true" : "false");
++    LOG(Info) << "  Frame limit: " << this->m_profile.frameLimit;
+ 
+     if (std::getenv("LSFGVK_ENV")) // No need to watch an environment variable
+         return;
+@@ -85,6 +86,7 @@ bool Layer::update() {
+         this->m_profile.multiplier = profile.multiplier;
+         this->m_profile.flowScale = profile.flowScale;
+         this->m_profile.performanceMode = profile.performanceMode;
++        this->m_profile.frameLimit = profile.frameLimit;
+         this->m_profile.colorSpace = profile.colorSpace;
+         this->m_profile.transferFunction = profile.transferFunction;
+         this->m_configuration = std::move(*config);
+diff --git a/lsfg-vk-layer/src/modes/vsync.cpp b/lsfg-vk-layer/src/modes/vsync.cpp
+index 7daa4d7..09f22b0 100644
+--- a/lsfg-vk-layer/src/modes/vsync.cpp
++++ b/lsfg-vk-layer/src/modes/vsync.cpp
+@@ -6,8 +6,10 @@
+ #include "lsfg-vk-helper/vkhelper.hpp"
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cstddef>
+ #include <cstdint>
++#include <thread>
+ #include <vector>
+ #include <vk>
+ 
+@@ -139,15 +141,32 @@ VkResult VsyncSwapchain::QueuePresentKHR(
+     const VkPresentInfoKHR* presentInfo
+ ) {
+     const auto status{Swapchain::QueuePresentKHR(fetchFunc, queue, presentInfo)};
++
++    const auto& layerHook{this->m_layer.get()};
++    const auto& profile{layerHook.profile()};
++
++    // Throttle the game's present rate to the profile's frame limit. This
++    // sleeps BEFORE the frame generation dispatch, so the pipeline produces
++    // at most `frameLimit` frames per second (RTSS-style: hold a steady_clock
++    // time point for the next slot and sleep_until 1/frameLimit later). Only
++    // the game's own presents pass through here; the generated frames are
++    // presented internally via fetchFunc and never re-enter this method.
++    // Runs even without an FG context (multiplier == 1): a pure frame limiter.
++    if (profile.frameLimit > 0) {
++        const auto now{std::chrono::steady_clock::now()};
++        if (this->m_nextFrameSlot > now)
++            std::this_thread::sleep_until(this->m_nextFrameSlot);
++        this->m_nextFrameSlot = std::chrono::steady_clock::now()
++            + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
++                std::chrono::duration<double>(1.0 / profile.frameLimit));
++    }
++
+     if (!this->m_lsfgvkContext) {
+         return fetchFunc(queue, presentInfo);
+     }
+ 
+-    const auto& layerHook{this->m_layer.get()};
+     const auto& deviceHook{this->m_device.get()};
+ 
+-    const auto& profile{layerHook.profile()};
+-
+     if (status == VK_ERROR_OUT_OF_DATE_KHR) {
+         this->resizeInnerSyncPasses(profile.multiplier - 1);
+     }
+diff --git a/lsfg-vk-layer/src/modes/vsync.hpp b/lsfg-vk-layer/src/modes/vsync.hpp
+index 0e24f33..d39b179 100644
+--- a/lsfg-vk-layer/src/modes/vsync.hpp
++++ b/lsfg-vk-layer/src/modes/vsync.hpp
+@@ -4,6 +4,7 @@
+ 
+ #include "../hooks.hpp"
+ 
++#include <chrono>
+ #include <cstddef>
+ #include <vector>
+ #include <vk>
+@@ -51,6 +52,7 @@ namespace lsfgvk::layer {
+             std::vector<InnerSyncPass> innerSyncPasses;
+         };
+         std::vector<SyncPass> m_syncPasses;
++        std::chrono::steady_clock::time_point m_nextFrameSlot{}; //!< Next allowed game present slot
+ 
+         void resizeInnerSyncPasses(size_t minSize);
+     };
