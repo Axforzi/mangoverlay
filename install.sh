@@ -4,9 +4,12 @@
 #               mangoverlay wrapper + lsfg-vk (upstream) + dll detection
 #
 # Usage:
-#   ./install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]
-#                [--install-deps] [--dll <path>] [--yes] [--force]
-#                [--prefix <dir>] [--help]
+#   One-liner (downloads the whole project and installs):
+#     curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/master/install.sh | bash
+#   Or from a local clone:
+#     ./install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]
+#                  [--install-deps] [--dll <path>] [--yes] [--force]
+#                  [--prefix <dir>] [--help]
 #
 # Flags:
 #   --skip-overlay   Do not build or install the overlay (MangoHud fork)
@@ -51,7 +54,14 @@ PREFIX="$HOME"; DLL_OVERRIDE=""
 PATCH_STATUS="skipped"
 
 usage() {
-    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+    if [ -r "$0" ]; then sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+    else
+        info "Usage:"
+        printf '   curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/master/install.sh | bash\n'
+        printf '   install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]\n'
+        printf '             [--install-deps] [--dll <path>] [--yes] [--force]\n'
+        printf '             [--prefix <dir>] [--help]\n'
+    fi
     exit 0
 }
 
@@ -70,6 +80,43 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
+
+# --- Bootstrap: standalone run (curl | bash) downloads the sources -----------
+# Detects that we are not inside the project tree (the MangoHud/ source and
+# patches/ are missing next to the script), downloads the repo tarball from
+# GitHub, extracts it to a temp dir and re-runs this same script from there.
+# Everything after the bootstrap therefore sees a complete source tree, exactly
+# like a local ./install.sh run.
+if [ ! -d "$(dirname -- "$0")/MangoHud" ]; then
+    info "Standalone run detected (curl | bash) — downloading mangoverlay sources..."
+    BOOT_REPO="Axforzi/mangoverlay"
+    BOOT_BRANCH="master"
+    BOOT_URL="https://github.com/$BOOT_REPO/archive/refs/heads/$BOOT_BRANCH.tar.gz"
+    if ! have curl && ! have wget; then
+        die "Neither curl nor wget is available; cannot download the sources."
+    fi
+    BOOT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/mangoverlay-boot.XXXXXX") \
+        || die "mktemp failed: cannot create a temp directory."
+    info "Downloading $BOOT_URL"
+    if have curl; then
+        curl -fsSL "$BOOT_URL" -o "$BOOT_DIR/src.tar.gz" \
+            || { rm -rf "$BOOT_DIR"; die "Download failed (curl)."; }
+    else
+        wget -q "$BOOT_URL" -O "$BOOT_DIR/src.tar.gz" \
+            || { rm -rf "$BOOT_DIR"; die "Download failed (wget)."; }
+    fi
+    tar -xzf "$BOOT_DIR/src.tar.gz" -C "$BOOT_DIR" \
+        || { rm -rf "$BOOT_DIR"; die "Extraction of the source tarball failed."; }
+    # GitHub tarballs extract into <repo>-<branch>/ (e.g. mangoverlay-master/)
+    BOOT_ROOT=$(find "$BOOT_DIR" -mindepth 1 -maxdepth 1 -type d -name 'mangoverlay-*' | head -n1)
+    [ -n "$BOOT_ROOT" ] && [ -f "$BOOT_ROOT/install.sh" ] \
+        || { rm -rf "$BOOT_DIR"; die "The source tarball did not contain the project."; }
+    info "Running the installer from $BOOT_ROOT"
+    bash "$BOOT_ROOT/install.sh" "$@"
+    rc=$?
+    rm -rf "$BOOT_DIR"
+    exit $rc
+fi
 
 # --- Paths (all relative to $HOME / $PREFIX) ---------------------------------
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -591,7 +638,7 @@ config_dll_and_configs() {
 
 # --- Pre-flight: check sources and previous installation ----------------------
 if [ "$SKIP_OVERLAY" -eq 0 ]; then
-    [ -d "$MANGO_SRC" ] || die "Overlay source not found: $MANGO_SRC (is MangoHud/ next to install.sh?)"
+    [ -d "$MANGO_SRC" ] || die "Overlay source not found: $MANGO_SRC. If you run this script in a directory without the project sources, rerun via 'curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/master/install.sh | bash'."
 fi
 
 HAS_PREVIOUS=0
