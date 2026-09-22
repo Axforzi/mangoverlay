@@ -49,13 +49,173 @@ export DISABLE_MANGOHUD=1
 
 ENV_CONF="${MANGOVERLAY_ENV_CONF:-$HOME/.config/lsfg-vk/env.conf}"
 
+# --- mangoverlay uninstall ---------------------------------------------------
+# Reverses install.sh from the installed copy itself. Self-locating: the
+# install prefix is derived from THIS wrapper's real path (resolving the
+# /usr/local/bin symlink and falling back to $HOME when run from a loose
+# copy), so you never need to remember where it was installed.
+#   mangoverlay uninstall              # ask, then remove
+#   mangoverlay uninstall --yes        # non-interactive
+#   mangoverlay uninstall --purge-configs  # ALSO remove ~/.config/lsfg-vk/
+# Removes the overlay layer, this wrapper, the lsfg-vk layer/tools/cache and
+# the shell PATH block. Configs are kept unless --purge-configs. Never
+# touches foreign files.
+if [ "$1" = "uninstall" ]; then
+   _yes=0; _purge=0
+   shift
+   for _a in "$@"; do
+      case "$_a" in
+         --yes) _yes=1 ;;
+         --purge-configs) _purge=1 ;;
+         -h|--help)
+            echo "mangoverlay uninstall [--yes] [--purge-configs]"
+            echo "Removes the overlay layer, this wrapper, lsfg-vk and the PATH block."
+            echo "  --yes            non-interactive"
+            echo "  --purge-configs  also remove ~/.config/lsfg-vk (profiles)"
+            echo "Configs are kept unless --purge-configs."
+            exit 0 ;;
+         *) printf 'mangoverlay uninstall: unknown option %s\n' "$_a" >&2; exit 2 ;;
+      esac
+   done
+
+   # --- self-locate the install prefix ---
+   _real="$0"; _hops=0; _tgt=""
+   while [ -L "$_real" ] && [ "$_hops" -lt 8 ]; do
+      _tgt="$(readlink "$_real" 2>/dev/null)" || break
+      case "$_tgt" in
+         /*) _real="$_tgt" ;;
+         *)  _real="$(dirname "$_real")/$_tgt" ;;
+      esac
+      _hops=$((_hops + 1))
+   done
+   case "$_real" in
+      /*) : ;;
+      *)  _real="$PWD/$_real" ;;
+   esac
+   _prefix="$HOME"
+   case "$_real" in
+      */.local/bin/mangoverlay)
+         _cand="$(dirname "$(dirname "$(dirname "$_real")")")"
+         # sanity: only trust a path that looks like a real install
+         if [ -d "$_cand/.local/share/vulkan/implicit_layer.d" ] ||
+            [ -d "$_cand/.local/lib/mangoverlay" ] ||
+            [ -f "$_cand/.local/bin/mangoverlay" ]; then
+            _prefix="$_cand"
+         fi
+         ;;
+   esac
+
+   _bin_dir="$_prefix/.local/bin"
+   _lib_dir="$_prefix/.local/lib/mangoverlay"
+   _lib_root="$_prefix/.local/lib"
+   _lib64_root="$_prefix/.local/lib64"
+   _vk_dir="$_prefix/.local/share/vulkan/implicit_layer.d"
+   _vk_config="${XDG_CONFIG_HOME:-$HOME/.config}/vulkan/implicit_layer.d"
+   _vk_layer_json="$_vk_dir/MangoHud_overlay_unified.json"
+   _bin_mangoverlay="$_bin_dir/mangoverlay"
+   _bin_lsfg_cli="$_bin_dir/lsfg-vk-cli"
+   _cfg_dir="$HOME/.config/lsfg-vk"
+   _lsfg_json="$_vk_config/VkLayer_LSFGVK_frame_generation.json"
+   _lsfg_cache="${XDG_CACHE_HOME:-$HOME/.cache}/mangoverlay"
+   _usr_bin_link="/usr/local/bin/mangoverlay"
+
+   echo "Uninstall prefix: $_prefix/.local"
+   echo "Configs: $_cfg_dir  (kept unless --purge-configs)"
+   if [ "$_yes" -ne 1 ]; then
+      printf 'Remove the overlay, mangoverlay wrapper and lsfg-vk layer? [y/N] '
+      read _ans
+      case "$_ans" in
+         y|Y) : ;;
+         *) printf 'aborted, nothing changed\n'; exit 1 ;;
+      esac
+      printf 'Confirm removing the installed files? (cannot be undone) [y/N] '
+      read _ans
+      case "$_ans" in
+         y|Y) : ;;
+         *) printf 'aborted, nothing changed\n'; exit 1 ;;
+      esac
+   fi
+
+   # overlay layer + libs
+   [ -f "$_vk_layer_json" ] && rm -f -- "$_vk_layer_json" && printf 'removed %s\n' "$_vk_layer_json"
+   [ -f "$_vk_dir/MangoHud.json" ] && rm -f -- "$_vk_dir/MangoHud.json"
+   [ -f "$_lib_dir/libMangoHud.so" ] && rm -f -- "$_lib_dir/libMangoHud.so"
+   [ -f "$_lib_dir/libMangoHud_opengl.so" ] && rm -f -- "$_lib_dir/libMangoHud_opengl.so"
+   rmdir "$_lib_dir" 2>/dev/null && printf 'removed dir %s\n' "$_lib_dir" || true
+
+   # this wrapper (the installed copy only)
+   if [ "$_real" = "$_bin_mangoverlay" ] && [ -f "$_bin_mangoverlay" ]; then
+      rm -f -- "$_bin_mangoverlay" && printf 'removed %s\n' "$_bin_mangoverlay"
+   fi
+
+   # the /usr/local/bin symlink, only when it points at OUR managed binary
+   if [ -L "$_usr_bin_link" ]; then
+      _link_target="$(readlink "$_usr_bin_link" 2>/dev/null || true)"
+      if [ "$_link_target" = "$_bin_mangoverlay" ] ||
+         { [ "$(basename "$_link_target" 2>/dev/null || true)" = "mangoverlay" ] &&
+           [ "$(dirname "$_link_target" 2>/dev/null || true)" = "$_bin_dir" ]; }; then
+         if [ -w "$(dirname "$_usr_bin_link")" ]; then
+            rm -f -- "$_usr_bin_link" && printf 'removed %s\n' "$_usr_bin_link"
+         else
+            printf 'need root to remove %s\n' "$_usr_bin_link" >&2
+            command -v sudo >/dev/null 2>&1 && sudo rm -f -- "$_usr_bin_link"
+         fi
+      else
+         printf 'not removing %s: it does not point at the managed binary\n' "$_usr_bin_link" >&2
+      fi
+   fi
+
+   # lsfg-vk
+   [ -f "$_lsfg_json" ] && rm -f -- "$_lsfg_json" && printf 'removed %s\n' "$_lsfg_json"
+   [ -f "$_bin_lsfg_cli" ] && rm -f -- "$_bin_lsfg_cli" && printf 'removed %s\n' "$_bin_lsfg_cli"
+   [ -f "$_lib_root/liblsfg-vk-layer.so" ] && rm -f -- "$_lib_root/liblsfg-vk-layer.so"
+   [ -f "$_lib_root/liblsfg-vk-layer.x86.so" ] && rm -f -- "$_lib_root/liblsfg-vk-layer.x86.so"
+   [ -f "$_lib64_root/liblsfg-vk-layer.so" ] && rm -f -- "$_lib64_root/liblsfg-vk-layer.so"
+   [ -f "$_vk_dir/VkLayer_LSFGVK_frame_generation.json" ] && rm -f -- "$_vk_dir/VkLayer_LSFGVK_frame_generation.json"
+   rmdir "$_vk_dir" 2>/dev/null || true
+   rmdir "$_vk_config" 2>/dev/null || true
+   if [ -d "$_lsfg_cache" ]; then
+      rm -rf -- "$_lsfg_cache" && printf 'removed cache %s\n' "$_lsfg_cache"
+   fi
+
+   # configs
+   if [ "$_purge" -eq 1 ]; then
+      [ -d "$_cfg_dir" ] && rm -rf -- "$_cfg_dir" && printf 'removed configs %s\n' "$_cfg_dir"
+   else
+      [ -d "$_cfg_dir" ] || [ -f "$_cfg_dir/conf.toml" ] || [ -f "$_cfg_dir/env.conf" ] \
+         && printf 'kept configs: %s (pass --purge-configs to remove)\n' "$_cfg_dir"
+   fi
+
+   # shell PATH block
+   for _rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+      [ -f "$_rc" ] || continue
+      if grep -q '^# >>> mangoverlay installer >>>' "$_rc" 2>/dev/null; then
+         if [ -w "$_rc" ]; then
+            _rc_tmp="$_rc.tmp.$$"
+            sed '/^# >>> mangoverlay installer >>>/,/^# <<< mangoverlay installer <<</d' "$_rc" > "$_rc_tmp" && mv "$_rc_tmp" "$_rc"
+            printf 'removed mangoverlay PATH block from %s\n' "$_rc"
+         else
+            printf 'cannot write %s; remove the mangoverlay PATH block manually\n' "$_rc" >&2
+         fi
+      fi
+   done
+
+   rmdir "$_bin_dir" 2>/dev/null || true
+   rmdir "$_lib_root" 2>/dev/null || true
+   rmdir "$_lib64_root" 2>/dev/null || true
+
+   printf 'done: overlay, wrapper and lsfg-vk removed\n'
+   exit 0
+fi
+
 # --- CLI-only commands -----------------------------------------------------
-# Terminal-only profile maintenance; these NEVER launch a game and exit
-# before the section-detection flow:
+# Terminal-only commands; these NEVER launch a game and exit before the
+# section-detection flow:
 #   mangoverlay --list-profiles                      # show profiles in both files
 #   mangoverlay --clean-profiles                     # ask, then remove ALL
 #   mangoverlay --clean-profiles --yes               # remove ALL (non-interactive)
 #   mangoverlay --clean-profiles <name> [<name>...]  # remove those from BOTH files
+#   mangoverlay uninstall [--yes] [--purge-configs]  # remove the install itself
 # A profile is the pair [SECTION] in env.conf + [[profile]] in conf.toml.
 # Removing one name touches both files together; "ALL" removes every section
 # and every profile, keeping conf.toml's version/[global]. The next launch of
