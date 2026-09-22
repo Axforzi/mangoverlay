@@ -22,7 +22,8 @@
 #   --force          Rebuild the overlay even if a build already exists
 #   --build          Compile locally instead of downloading the precompiled
 #                    release assets (default is to try the assets first and
-#                    fall back to a local build if they are unavailable)
+#                    fall back to a local build if they are unavailable or
+#                    your glibc is too old for the prebuilt binaries)
 #   --prefix <dir>   Install base (default: $HOME); binaries, libs and
 #                    layers go to <prefix>/.local, configs to ~/.config
 #   --help           Show this help
@@ -167,6 +168,28 @@ fi
 PREBUILT_DIR=""                       # set by fetch_prebuilt on success
 PREBUILT_BASE_URL="https://github.com/Axforzi/mangoverlay/releases/download"
 
+# --- Prebuilt glibc gate ------------------------------------------------------
+# The release assets are built on the CI runner (ubuntu-22.04, glibc 2.35).
+# glibc symbol versioning means those binaries cannot load on systems with an
+# older glibc (they die with "GLIBC_2.35 not found" at game launch), so when
+# the local glibc is older than the build's we MUST compile locally instead of
+# shipping an install that breaks at runtime.
+MIN_GLIBC="2.35"
+glibc_version() {
+    # "2.35" -> 235 ; empty on non-glibc libcs (e.g. musl)
+    getconf GNU_LIBC_VERSION 2>/dev/null | awk -F. '{print $1*100+$2}'
+}
+prebuilt_supported_by_glibc() {
+    local gv min_ver
+    gv="$(glibc_version)"
+    [ -n "$gv" ] || return 1
+    min_ver="$(printf '%s\n' "$MIN_GLIBC" | awk -F. '{print $1*100+$2}')"
+    if [ "$gv" -ge "$min_ver" ] 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 # fetch_prebuilt: download the release assets for $PREBUILT_TAG into a cache
 # dir and verify the expected files are really there. On success sets
 # PREBUILT_DIR and returns 0; on any failure returns 1 (the caller falls back
@@ -174,6 +197,19 @@ PREBUILT_BASE_URL="https://github.com/Axforzi/mangoverlay/releases/download"
 fetch_prebuilt() {
     [ -n "$PREBUILT_TAG" ] || return 1
     [ "$FORCE_BUILD" -eq 1 ] && return 1
+    if ! prebuilt_supported_by_glibc; then
+        local gv
+        gv="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+        if [ -n "$gv" ]; then
+            warn "Your glibc is $gv; the precompiled assets need glibc >= $MIN_GLIBC."
+            warn "Those binaries would fail at runtime (GLIBC_2.35 not found)."
+        else
+            warn "Your libc is not glibc (or could not be detected); the precompiled"
+            warn "assets need glibc >= $MIN_GLIBC and would not load here."
+        fi
+        warn "Compiling locally instead (equivalent to --build)."
+        return 1
+    fi
 
     local cachedir="${XDG_CACHE_HOME:-$HOME/.cache}/mangoverlay/prebuilt/$PREBUILT_TAG"
     if [ -z "$(ls -A "$cachedir" 2>/dev/null)" ]; then

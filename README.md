@@ -67,9 +67,10 @@ install; sudo is only asked for the optional build deps and the
 **Precompiled by default.** Each release ships prebuilt binaries
 (`mangoverlay-assets-<tag>.tar.gz`, built by the GitHub Actions workflow):
 the installer downloads them and skips the local compilation — no `meson`,
-`ninja` or `cmake` required. If the download is unavailable it falls back to
-a local build automatically. Pass `--build` to always compile locally (e.g.
-on an old distro whose glibc is older than the CI runner's).
+`ninja` or `cmake` required. If the download is unavailable, or your distro's
+glibc is older than the CI runner's (the prebuilt binaries would fail to load
+with `GLIBC_2.35 not found`), it falls back to a local build automatically and
+tells you. Pass `--build` to always compile locally.
 
 ### Local clone
 
