@@ -106,12 +106,53 @@ detect_section() {
       printf '%s\n' "$_noexe"
       return
    fi
+   # 3c. AppImage normalization: lowercase, strip .AppImage/.appimage and a
+   # trailing version like -v0.2.1, so e.g. Eden-Linux-v0.2.1.AppImage matches
+   # the [eden] section. Applies only when a section with the normalized name
+   # exists; otherwise falls back to the literal basename (unchanged behavior).
+   _norm=$(printf '%s' "$_cmd" | sed -E 's/\.(AppImage|appimage)$//; s/-v?[0-9]+\.[0-9]+(\.[0-9]+)?$//' | tr '[:upper:]' '[:lower:]')
+   if [ -n "$_norm" ] && [ "$_norm" != "$_cmd" ] && grep -q "^\[${_norm}\]$" "$ENV_CONF" 2>/dev/null; then
+      printf '%s\n' "$_norm"
+      return
+   fi
    printf '%s\n' "$_cmd"
 }
 
 if [ -f "$ENV_CONF" ]; then
    SECTION="$(detect_section "$1")"
    if [ -n "$SECTION" ]; then
+      # Bootstrap (universal): if the game has no [SECTION] in env.conf yet,
+      # declare it automatically so the game gets a profile WITHOUT manual
+      # per-game config. Two files keep their own scope:
+      #   env.conf -> a [SECTION] exporting LSFGVK_PROFILE="<name>" (the
+      #               per-game activation the layer reads by name).
+      #   conf.toml -> a [[profile]] with name/active_in = <SECTION> and sane
+      #               defaults (multiplier 1 = frame gen OFF, vsync pacing)
+      #               IF that profile does not exist yet. Unknown games start
+      #               WITHOUT frame generation; enable it from the menu.
+      # This preserves isolation: every game still gets its OWN section (there
+      # is no [global]); only the declaration step is automated.
+      _CONF_TOML="$(dirname -- "$ENV_CONF")/conf.toml"
+      if ! grep -q "^\[${SECTION}\]$" "$ENV_CONF" 2>/dev/null; then
+         {
+            printf '\n[%s]\n' "$SECTION"
+            printf 'LSFGVK_PROFILE="%s"\n' "$SECTION"
+         } >> "$ENV_CONF"
+      fi
+      if [ -f "$_CONF_TOML" ] && \
+         ! grep -q '^active_in[[:space:]]*=[[:space:]]*"'"${SECTION}"'"$' "$_CONF_TOML" 2>/dev/null; then
+         {
+            printf '\n[[profile]]\n'
+            printf 'active_in = "%s"\n' "$SECTION"
+            printf 'frame_limit = 0\n'
+            printf 'multiplier = 1\n'
+            printf 'name = "%s"\n' "$SECTION"
+            printf 'override_present_mode = false\n'
+            printf 'pacing_mode = "vsync"\n'
+            printf 'performance_mode = false\n'
+            printf 'preserve_swapchain_image_count = false\n'
+         } >> "$_CONF_TOML"
+      fi
       # if the game section has disable_all_vars, export nothing from it
       _sec_off="$(env_section_lines "$SECTION" | awk -F= '/^disable_all_vars[[:space:]]*=[[:space:]]*[Tt]rue/ { print "1"; exit }')"
       if [ "$_sec_off" != "1" ]; then
