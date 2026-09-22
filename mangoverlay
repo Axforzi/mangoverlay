@@ -32,10 +32,170 @@ export DISABLE_MANGOHUD=1
 #   1. Explicit override: MANGOVERLAY_SECTION=<name> shell env var.
 #   2. STEAM_COMPAT_APP_NAME set by Steam for Proton games (tried as-is and
 #      with the .exe suffix when it does not match).
-#   3. Basename of the command's first executable (.exe stripped/kept and
-#      both are tried as-is and without the suffix).
+#   3. AUTHORITATIVE native resolution: Steam exports a numeric SteamAppId;
+#      the matching appmanifest_<id>.acf maps it to the install dir and the
+#      real executable (e.g. Haste.x86_64). Immune to the ever-growing
+#      wrapper-shim chain (steam-launch-wrapper, reaper, SteamLaunch,
+#      AppId=..., _v2-entry-point, --verb=...).
+#   4. Fallback ONLY for non-Steam launches (AppImage, umu-run, ...): basename
+#      of the command's first executable, skipping known wrapper shims.
+#      The executable basename is tried as-is, with .exe appended, and with
+#      .exe stripped (Proton games expose an .exe; native games usually do
+#      not).
+#   IMPORTANT: a pure wrapper command (e.g. just "steam-launch-wrapper")
+#   NEVER becomes a section -- otherwise EVERY Steam game would share one
+#   generic profile. Returning no section lets the lsfg-vk layer fall back to
+#   its own executable matching, which picks the per-game profile.
 
 ENV_CONF="${MANGOVERLAY_ENV_CONF:-$HOME/.config/lsfg-vk/env.conf}"
+
+# --- CLI-only commands -----------------------------------------------------
+# Terminal-only profile maintenance; these NEVER launch a game and exit
+# before the section-detection flow:
+#   mangoverlay --list-profiles                      # show profiles in both files
+#   mangoverlay --clean-profiles                     # ask, then remove ALL
+#   mangoverlay --clean-profiles --yes               # remove ALL (non-interactive)
+#   mangoverlay --clean-profiles <name> [<name>...]  # remove those from BOTH files
+# A profile is the pair [SECTION] in env.conf + [[profile]] in conf.toml.
+# Removing one name touches both files together; "ALL" removes every section
+# and every profile, keeping conf.toml's version/[global]. The next launch of
+# a game re-creates its own profile via the normal bootstrap, so a full clean
+# is a safe reset.
+# --------------------------------------------------------------------------
+if [ "$1" = "--list-profiles" ] || [ "$1" = "--clean-profiles" ]; then
+   _CONF_TOML="$(dirname -- "$ENV_CONF")/conf.toml"
+
+   # prints every [[profile]] in conf.toml, one line per profile
+   _toml_list() {
+      awk '
+         /^\[\[profile\]\]/ { flush(); state = 1; name = ""; active = ""; next }
+         state == 1 && /^name[[:space:]]*=[[:space:]]*"/ {
+            v = $0; sub(/^[^=]*=[[:space:]]*"/, "", v); sub(/"[[:space:]]*$/, "", v); name = v; next
+         }
+         state == 1 && /^active_in[[:space:]]*=[[:space:]]*"/ {
+            v = $0; sub(/^[^=]*=[[:space:]]*"/, "", v); sub(/"[[:space:]]*$/, "", v); active = v; next
+         }
+         state == 1 && /^\[/ { flush(); state = 0 }
+         { next }
+         function flush() {
+            if (name != "") {
+               printf "  %s", name
+               if (active != "" && active != name) printf "  (active_in: %s)", active
+               printf "\n"
+            }
+            name = ""; active = ""
+         }
+         END { flush() }
+      ' "$_CONF_TOML"
+   }
+
+   # prints env.conf without the [SECTION] named $1
+   _env_hide_section() {
+      awk -v target="$1" '
+         /^\[/ { skip = ($0 == "[" target "]") }
+         !skip { print }
+      ' "$ENV_CONF"
+   }
+
+   # prints conf.toml without any profile whose name OR active_in is $1
+   _toml_hide_profile() {
+      awk -v target="$1" '
+         function flush() {
+            if (inblock && keep) printf "%s", buf
+            inblock = 0; keep = 1; buf = ""
+         }
+         /^\[\[profile\]\]/ { flush(); inblock = 1; keep = 1; buf = $0 "\n"; next }
+         inblock {
+            if ($0 ~ /^\[/) { flush(); print $0; next }
+            buf = buf $0 "\n"
+            if ($0 ~ /^name[[:space:]]*=[[:space:]]*"/) {
+               v = $0; sub(/^[^=]*=[[:space:]]*"/, "", v); sub(/"[[:space:]]*$/, "", v)
+               if (v == target) keep = 0
+            }
+            if ($0 ~ /^active_in[[:space:]]*=[[:space:]]*"/) {
+               v = $0; sub(/^[^=]*=[[:space:]]*"/, "", v); sub(/"[[:space:]]*$/, "", v)
+               if (v == target) keep = 0
+            }
+            next
+         }
+         { print }
+         END { flush() }
+      ' "$_CONF_TOML"
+   }
+
+   # collapses runs of empty lines into a single one (INI cosmetics)
+   _collapse_blanks() {
+      awk 'NF { blank = 0; print; next } !blank { blank = 1; print "" }'
+   }
+
+   if [ "$1" = "--list-profiles" ]; then
+      printf 'profiles in conf.toml:\n'
+      _toml_list
+      printf 'sections in env.conf:\n'
+      awk '/^\[/ { sub(/^\[/, ""); sub(/\].*/, ""); printf "  %s\n", $0 }' "$ENV_CONF"
+      exit 0
+   fi
+
+   # --clean-profiles: remaining args are names, or --yes, or nothing (= ALL)
+   shift
+   _yes=0
+   for _a in "$@"; do
+      [ "$_a" = "--yes" ] && _yes=1
+   done
+
+   if [ $# -eq 0 ] || { [ $# -eq 1 ] && [ "$1" = "--yes" ]; }; then
+      # ALL mode: show what exists, then confirm on a terminal
+      printf 'removing ALL profiles:\n'
+      printf 'profiles in conf.toml:\n'
+      _toml_list
+      printf 'sections in env.conf:\n'
+      awk '/^\[/ { sub(/^\[/, ""); sub(/\].*/, ""); printf "  %s\n", $0 }' "$ENV_CONF"
+      if [ "$_yes" != "1" ]; then
+         printf 'Remove all profiles? [y/N] '
+         read _ans
+         case "$_ans" in
+            y|Y) : ;;
+            *) printf 'aborted, nothing changed\n'; exit 1 ;;
+         esac
+      fi
+      # env.conf -> keep nothing (config is sections-only by design)
+      : > "$ENV_CONF"
+      # conf.toml -> keep version + [global] block, drop every [[profile]]
+      awk '
+         /^\[\[profile\]\]/ { skip = 1; next }
+         /^\[/ && !/^\[\[/ { skip = 0 }
+         !skip { print }
+      ' "$_CONF_TOML" > "$_CONF_TOML.tmp" && mv "$_CONF_TOML.tmp" "$_CONF_TOML"
+      printf 'all profiles removed from %s and %s\n' "$ENV_CONF" "$_CONF_TOML"
+      exit 0
+   fi
+
+   # named mode: remove each name from BOTH files together
+   _removed=0
+   for _name in "$@"; do
+      [ "$_name" = "--yes" ] && continue
+      _in_env=0; _in_toml=0
+      _env_hide_section "$_name" > "$ENV_CONF.tmp"
+      cmp -s "$ENV_CONF" "$ENV_CONF.tmp" || _in_env=1
+      mv "$ENV_CONF.tmp" "$ENV_CONF"
+      _toml_hide_profile "$_name" > "$_CONF_TOML.tmp"
+      cmp -s "$_CONF_TOML" "$_CONF_TOML.tmp" || _in_toml=1
+      mv "$_CONF_TOML.tmp" "$_CONF_TOML"
+      if [ "$_in_env" = "1" ] || [ "$_in_toml" = "1" ]; then
+         printf 'removed %s (env.conf%s, conf.toml%s)\n' \
+            "$_name" \
+            "$([ "$_in_env" = 1 ] && printf ' yes' || printf ' no')" \
+            "$([ "$_in_toml" = 1 ] && printf ' yes' || printf ' no')"
+         _removed=$((_removed + 1))
+      else
+         printf 'no profile named %s\n' "$_name"
+      fi
+   done
+   # cosmetic: collapse repeated blank lines left in env.conf
+   _collapse_blanks < "$ENV_CONF" > "$ENV_CONF.tmp" && mv "$ENV_CONF.tmp" "$ENV_CONF"
+   [ "$_removed" -gt 0 ] && printf 'done, %d profile(s) removed from both files\n' "$_removed"
+   exit 0
+fi
 
 # Exports a "KEY=VALUE" pair; values with spaces or quotes are cleaned. The
 # disable_all_vars flag is skipped (it is not an env var).
@@ -70,6 +230,73 @@ env_section_lines() {
    ' "$ENV_CONF"
 }
 
+# Resolves the game section from the Steam app manifest. This is the
+# AUTHORITATIVE identity: Steam exports a numeric SteamAppId for every game it
+# runs, and appmanifest_<id>.acf maps it to the install dir and the real
+# executable. It is immune to the wrapper-shim chain Steam keeps growing
+# (steam-launch-wrapper, reaper, SteamLaunch, AppId=..., _v2-entry-point,
+# --verb=...). Returns the executable basename (e.g. Haste.x86_64) or nothing.
+steam_appid_section() {
+   _aid="${SteamAppId:-${STEAM_APPID:-}}"
+   [ -n "$_aid" ] || return
+   case "$_aid" in *[!0-9]*) return ;; esac # non-numeric is not a Steam appid
+
+   # The manifest lives in steamapps/ next to every library root; the default
+   # library plus any extra paths from libraryfolders.vdf.
+   _manifest=""
+   _default_manifest="$HOME/.local/share/Steam/steamapps/appmanifest_${_aid}.acf"
+   if [ -f "$_default_manifest" ]; then
+      _manifest="$_default_manifest"
+   else
+      for _lib in $(sed -n 's/.*"path"[[:space:]]*"\(.*\)".*/\1/p' \
+         "$HOME/.local/share/Steam/steamapps/libraryfolders.vdf" 2>/dev/null); do
+         [ -f "$_lib/steamapps/appmanifest_${_aid}.acf" ] || continue
+         _manifest="$_lib/steamapps/appmanifest_${_aid}.acf"
+         break
+      done
+   fi
+   [ -n "$_manifest" ] || return
+
+   _installdir=$(sed -n 's/.*"installdir"[[:space:]]*"\(.*\)".*/\1/p' "$_manifest" | head -1)
+   [ -n "$_installdir" ] || return
+   _game_dir="$(dirname -- "$_manifest")/common/$_installdir"
+   [ -d "$_game_dir" ] || return
+
+   # Prefer the conventional native binary names (Unity/Godot/whatever ships
+   # <name>.x86_64 / .x86), then the real game executable. For Proton
+   # (Windows) games the game is a .exe nested somewhere under the install
+   # dir; data files wrongly marked +x (bm_installscript.vdf, *.vdf, ...)
+   # never qualify.
+   _cmd=""
+   for _f in "$_game_dir/$_installdir.x86_64" "$_game_dir/$_installdir.x86" \
+             "$_game_dir"/*.x86_64 "$_game_dir"/*.x86; do
+      [ -f "$_f" ] && [ -x "$_f" ] && { _cmd=$(basename -- "$_f"); break; }
+   done
+   # Proton/Windows: the real game is an .exe somewhere in the tree. Skip
+   # obvious installers/helpers; each distinct basename is a candidate and
+   # the first one (sorted) wins -- for most games there is exactly one.
+   if [ -z "$_cmd" ]; then
+      _cmd=$(find "$_game_dir" -type f -iname '*.exe' \
+         ! -iname '*unins*' ! -iname '*setup*' ! -iname '*install*' \
+         ! -iname '*redist*' ! -iname '*launcher*' \
+         -exec basename {} \; 2>/dev/null | sort -u | head -1)
+   fi
+   if [ -z "$_cmd" ]; then
+      for _f in "$_game_dir"/*; do
+         [ -f "$_f" ] && [ -x "$_f" ] || continue
+         _b=$(basename -- "$_f")
+         case "$_b" in
+            *.so*|*_Data|*_data|version.txt|*.txt|gameoverlay*|lib*|*.sh|*.vdf|*.ini|*.cfg|*.json)
+               continue ;;
+         esac
+         _cmd="$_b"
+         break
+      done
+   fi
+   [ -n "$_cmd" ] || return
+   printf '%s\n' "$_cmd"
+}
+
 # Detects the section name to use (returns the .exe suffix when it matches
 # the lsfg profile, or the name as-is).
 detect_section() {
@@ -94,11 +321,91 @@ detect_section() {
       printf '%s\n' "$SteamAppId"
       return
    fi
-   # 3. basename of the command's first executable
-   _cmd=$(basename -- "$1" 2>/dev/null)
-   [ -z "$_cmd" ] && return
+# 2c. AUTHORITATIVE: SteamAppId -> appmanifest -> installdir -> real binary.
+    #     This replaces guessing through the ever-growing wrapper chain.
+    _manifest_section="$(steam_appid_section)"
+    if [ -n "$_manifest_section" ]; then
+       printf '%s\n' "$_manifest_section"
+       return
+    fi
+    # 2d. LAUNCHER-PROVIDED EXE: umu (the Proton-compatible runner bundled
+    #     with Lutris/Heroic/manual launchers) treats $EXE as the source of
+    #     truth for the real game binary. Honor it when it names a real
+    #     binary (existing file or game-like extension); ignore shim values
+    #     like winetricks or a bare wrapper name.
+    if [ -n "${EXE:-}" ]; then
+       _exe_base=$(basename -- "$EXE" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+       case "$_exe_base" in
+          ''|winetricks|steam-launch-wrapper|steam-launcher|gamemoderun|game-performance|reaper|umu-run|umu_run.py|--)
+             ;;
+          *.exe|*.x86_64|*.x86|*.appimage)
+             printf '%s\n' "$(basename -- "$EXE")"
+             return
+             ;;
+          *)
+             if [ -f "$EXE" ]; then
+                printf '%s\n' "$(basename -- "$EXE")"
+                return
+             fi
+             ;;
+       esac
+    fi
+    # 3. basename of the first real executable in the argv, SKIPPING wrapper
+    #    shims and option flags so the real game decides. Steam prepends
+    #    steam-launch-wrapper/reaper/SteamLaunch/AppId=.../_v2-entry-point/
+    #    --verb=... to Proton games; gamemoderun/game-performance can be
+    #    stacked before the game; Lutris/Heroic prepend umu-run / umu_run.py
+    #    plus their own options (e.g. `umu-run -p <prefix> -- <game>`) to run
+    #    games through a bundled Proton-compatible runner. We prefer the first
+    #    existing file, fall back to the first non-shim non-flag token (so a
+    #    bare command like `vkcube` still works), and never mint a generic
+    #    section from wrapper-only command lines.
+    _real_cmd=""
+    _fallback_cmd=""
+    while [ "$#" -gt 0 ]; do
+       _candidate=$(basename -- "$1" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+       case "$_candidate" in
+          steam-launch-wrapper|steam-launcher|gamemoderun|game-performance|reaper|steamlaunch|appid=*|*entry-point*|--verb=*|umu-run|umu_run.py|--)
+             shift
+             continue
+             ;;
+       esac
+       case "$1" in
+          -*) shift; continue ;;
+       esac
+       [ -z "$_fallback_cmd" ] && _fallback_cmd="$1"
+       if [ -f "$1" ]; then
+          _real_cmd="$1"
+          break
+       fi
+       case "$_candidate" in
+          *.exe|*.x86_64|*.x86|*.appimage)
+             _real_cmd="$1"
+             break
+             ;;
+       esac
+       shift
+    done
+    [ -z "$_real_cmd" ] && _real_cmd="$_fallback_cmd"
+    if [ -z "${_real_cmd:-}" ]; then
+       # only wrapper shims/flags were present; do NOT mint a generic section
+       return
+    fi
+    _cmd=$(basename -- "$_real_cmd" 2>/dev/null)
+    [ -z "$_cmd" ] && return
+    # a wrapper-only command must never become a section (see header note)
+    case "$_cmd" in
+       [sS][tT][eE][aA][mM][lL][aA][uU][nN][cC][hH]|appid=*|*entry-point*|--verb=*|steam-launch-wrapper|steam-launcher|gamemoderun|game-performance|reaper|umu-run|umu_run.py|--)
+          return
+          ;;
+    esac
    if grep -q "^\[${_cmd}\]$" "$ENV_CONF" 2>/dev/null; then
       printf '%s\n' "$_cmd"
+      return
+   fi
+   _with_exe="${_cmd}.exe"
+   if [ "$_with_exe" != "$_cmd" ] && grep -q "^\[${_with_exe}\]$" "$ENV_CONF" 2>/dev/null; then
+      printf '%s\n' "$_with_exe"
       return
    fi
    _noexe=${_cmd%.exe}
@@ -119,7 +426,7 @@ detect_section() {
 }
 
 if [ -f "$ENV_CONF" ]; then
-   SECTION="$(detect_section "$1")"
+   SECTION="$(detect_section "$@")"
    if [ -n "$SECTION" ]; then
       # Bootstrap (universal): if the game has no [SECTION] in env.conf yet,
       # declare it automatically so the game gets a profile WITHOUT manual
