@@ -144,6 +144,7 @@ if [ -f "$ENV_CONF" ]; then
          {
             printf '\n[[profile]]\n'
             printf 'active_in = "%s"\n' "$SECTION"
+            printf 'flow_scale = 1.0\n'
             printf 'frame_limit = 0\n'
             printf 'multiplier = 1\n'
             printf 'name = "%s"\n' "$SECTION"
