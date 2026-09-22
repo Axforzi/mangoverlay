@@ -55,7 +55,7 @@ measures the frames *after* generation.
 Downloads the project and installs everything in one shot:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.2/install.sh | bash
 ```
 
 The script detects it is not running from a local clone, downloads and
@@ -117,6 +117,21 @@ Then in-game:
 | Activate          | Enter / A          |
 | Back / close      | Esc / B            |
 
+### Uninstall
+
+Reverses the install (overlay layer, mangoverlay wrapper, lsfg-vk layer,
+tools and source cache, and the PATH block in your shell rc):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.2/uninstall.sh | bash
+```
+
+Or from a local clone: `./uninstall.sh [--purge-configs] [--yes] [--help]`.
+
+By default your per-game configs (`~/.config/lsfg-vk/`) are **kept**; pass
+`--purge-configs` to remove them too. Nothing else outside the installed
+paths is touched.
+
 ## Configuration files
 
 - `~/.config/MangoHud/MangoHud.conf` — HUD options (stats, colors, alpha,
@@ -133,6 +148,7 @@ Then in-game:
 ```
 overlay/
 ├── install.sh         # integrated installer
+├── uninstall.sh       # reversible uninstaller
 ├── mangoverlay        # per-game launch wrapper (source)
 ├── MangoHud/          # the MangoHud fork (overlay + unified menu)
 ├── patches/           # lsfg-vk patches applied by the installer
