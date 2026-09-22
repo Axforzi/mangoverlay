@@ -55,7 +55,7 @@ measures the frames *after* generation.
 Downloads the project and installs everything in one shot:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.3/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.4/install.sh | bash
 ```
 
 The script detects it is not running from a local clone, downloads and
@@ -64,6 +64,13 @@ installer from there. No `chmod +x` and no sudo needed for the base
 install; sudo is only asked for the optional build deps and the
 `/usr/local/bin` symlink (both can be skipped).
 
+**Precompiled by default.** Each release ships prebuilt binaries
+(`mangoverlay-assets-<tag>.tar.gz`, built by the GitHub Actions workflow):
+the installer downloads them and skips the local compilation — no `meson`,
+`ninja` or `cmake` required. If the download is unavailable it falls back to
+a local build automatically. Pass `--build` to always compile locally (e.g.
+on an old distro whose glibc is older than the CI runner's).
+
 ### Local clone
 
 ```sh
@@ -71,33 +78,39 @@ git clone https://github.com/Axforzi/mangoverlay
 cd mangoverlay
 ./install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]
              [--install-deps] [--dll <path>] [--yes] [--force]
-             [--prefix <dir>] [--help]
+             [--build] [--prefix <dir>] [--help]
 ```
 
-Without flags, the script:
+Without flags, the script (when it is on a release tag, or started from the
+one-liner):
 
-1. Detects your distro/package manager and (optionally, with sudo) installs
-   the build deps (`meson`, `ninja`, `cmake`, `glslang`, X11/Wayland/DBus
-   headers, ...).
-2. Builds the overlay (the MangoHud fork).
+1. Detects your distro/package manager and — when compulsory build deps are
+   needed — installs them (with sudo, optional).
+2. Downloads the precompiled release assets for the current tag and skips
+   local compilation.
 3. Installs the overlay layer and libraries under
    `~/.local/lib/mangoverlay/` and the layer manifest under
    `~/.local/share/vulkan/implicit_layer.d/`.
 4. Installs the `mangoverlay` wrapper to `~/.local/bin/` and — with sudo
    consent — links it into `/usr/local/bin/` so Steam can find it.
-5. Clones and builds the upstream `lsfg-vk` layer (with a per-profile
-   `frame_limit` patch), installing it so its manifest loads *before* the
-   overlay.
+5. Installs the upstream `lsfg-vk` layer (patches already applied in CI),
+   placing its manifest so it loads *before* the overlay.
 6. Locates `lsfg-vk.dll` (auto-search in the Steam install dir, or a file
    picker with zenity/kdialog, or `--dll <path>`) and writes the configs:
    `~/.config/lsfg-vk/conf.toml` and `~/.config/lsfg-vk/env.conf`.
+
+On a git branch without a release tag, or with `--build`, steps 1-2 become
+the classic local build: installing the toolchain with sudo, `meson`/`ninja`
+for the overlay and `cmake` for lsfg-vk (with the per-profile `frame_limit`
+patch).
 
 All binaries and layers go under `~/.local` (or your `--prefix`); no sudo is
 needed except for optional build deps and the `/usr/local/bin` symlink.
 Existing configs are never overwritten.
 
-> Requires bash. The MangoHud fork sources must be present as `MangoHud/`
-> next to `install.sh`.
+> Requires bash. On a release tag the prebuilt assets skip the MangoHud
+> sources entirely; when compiling locally the fork sources must be present
+> as `MangoHud/` next to `install.sh`.
 
 ### Steam
 
@@ -130,7 +143,7 @@ mangoverlay uninstall --purge-configs  # also removes your profiles
 Or via `curl` when the wrapper is broken or missing:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.3/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.4/uninstall.sh | bash
 ```
 
 By default your per-game configs (`~/.config/lsfg-vk/`) are **kept**; pass
@@ -152,11 +165,12 @@ paths is touched.
 
 ```
 overlay/
-├── install.sh         # integrated installer
+├── install.sh         # integrated installer (prebuilt-first, --build fallback)
 ├── uninstall.sh       # reversible uninstaller
 ├── mangoverlay        # per-game launch wrapper (source)
+├── .github/workflows/ # CI: builds precompiled release assets per tag
 ├── MangoHud/          # the MangoHud fork (overlay + unified menu)
-├── patches/           # lsfg-vk patches applied by the installer
+├── patches/           # lsfg-vk patches applied by the installer / CI
 └── layer-test/        # throwaway layer sanity checks
 ```
 

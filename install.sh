@@ -5,11 +5,11 @@
 #
 # Usage:
 #   One-liner (downloads the whole project and installs):
-#     curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.3/install.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.4/install.sh | bash
 #   Or from a local clone:
 #     ./install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]
 #                  [--install-deps] [--dll <path>] [--yes] [--force]
-#                  [--prefix <dir>] [--help]
+#                  [--build] [--prefix <dir>] [--help]
 #
 # Flags:
 #   --skip-overlay   Do not build or install the overlay (MangoHud fork)
@@ -20,6 +20,9 @@
 #   --dll <path>     Use that lsfg-vk.dll path (validates it exists), no prompt
 #   --yes            Ask nothing: use defaults and skip GUI prompts
 #   --force          Rebuild the overlay even if a build already exists
+#   --build          Compile locally instead of downloading the precompiled
+#                    release assets (default is to try the assets first and
+#                    fall back to a local build if they are unavailable)
 #   --prefix <dir>   Install base (default: $HOME); binaries, libs and
 #                    layers go to <prefix>/.local, configs to ~/.config
 #   --help           Show this help
@@ -47,7 +50,7 @@ have()  { command -v "$1" >/dev/null 2>&1; }
 
 # --- Default flags -----------------------------------------------------------
 SKIP_OVERLAY=0; SKIP_LSFG=0; SKIP_DEPS=0; INSTALL_DEPS=0
-FORCE=0; YES=0
+FORCE=0; YES=0; FORCE_BUILD=0
 PREFIX="$HOME"; DLL_OVERRIDE=""
 # lsfg-vk patch status (set in install_lsfg); "skipped" is the default for
 # the final summary when --skip-lsfg skips their application. Patches are
@@ -56,13 +59,13 @@ PREFIX="$HOME"; DLL_OVERRIDE=""
 PATCH_STATUS="skipped"
 
 usage() {
-    if [ -r "$0" ]; then sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+    if [ -r "$0" ]; then sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
     else
         info "Usage:"
-        printf '   curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.3/install.sh | bash\n'
+        printf '   curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.4/install.sh | bash\n'
         printf '   install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]\n'
         printf '             [--install-deps] [--dll <path>] [--yes] [--force]\n'
-        printf '             [--prefix <dir>] [--help]\n'
+        printf '             [--build] [--prefix <dir>] [--help]\n'
     fi
     exit 0
 }
@@ -74,6 +77,7 @@ while [ "$#" -gt 0 ]; do
         --skip-deps)     SKIP_DEPS=1 ;;
         --install-deps)  INSTALL_DEPS=1 ;;
         --force)         FORCE=1 ;;
+        --force-build|--build) FORCE_BUILD=1 ;;
         --yes)           YES=1 ;;
         --prefix)        PREFIX="$2"; shift ;;
         --dll)           DLL_OVERRIDE="$2"; shift ;;
@@ -94,7 +98,7 @@ if [ ! -d "$(dirname -- "$0")/MangoHud" ]; then
     BOOT_REPO="Axforzi/mangoverlay"
     # Pinned to a release tag so the installer is reproducible: whoever runs
     # the one-liner (which points at this tag) also downloads the same tag.
-    BOOT_BRANCH="v0.1.3"
+    BOOT_BRANCH="v0.1.4"
     BOOT_URL="https://github.com/$BOOT_REPO/archive/refs/tags/$BOOT_BRANCH.tar.gz"
     if ! have curl && ! have wget; then
         die "Neither curl nor wget is available; cannot download the sources."
@@ -116,7 +120,9 @@ if [ ! -d "$(dirname -- "$0")/MangoHud" ]; then
     [ -n "$BOOT_ROOT" ] && [ -f "$BOOT_ROOT/install.sh" ] \
         || { rm -rf "$BOOT_DIR"; die "The source tarball did not contain the project."; }
     info "Running the installer from $BOOT_ROOT"
-    bash "$BOOT_ROOT/install.sh" "$@"
+    # Carry the pinned tag into the re-run: it lets the inner script fetch
+    # the precompiled release assets for exactly this version.
+    MANGO_PREBUILT_TAG="$BOOT_BRANCH" bash "$BOOT_ROOT/install.sh" "$@"
     rc=$?
     rm -rf "$BOOT_DIR"
     exit $rc
@@ -146,6 +152,65 @@ CFG_DIR="$HOME/.config/lsfg-vk"
 CONF_TOML="$CFG_DIR/conf.toml"
 ENV_CONF="$CFG_DIR/env.conf"
 LSFG_SRC="${XDG_CACHE_HOME:-$HOME/.cache}/mangoverlay/lsfg-vk"
+
+# --- Prebuilt assets (optional; the default is to use them) ------------------
+# Each release ships mangoverlay-assets-<tag>.tar.gz built by the
+# .github/workflows/build-release-assets.yml workflow. install.sh downloads
+# these first and only compiles locally when they do not exist or --build is
+# passed. The tag is carried from the one-liner bootstrap; a local clone
+# sitting exactly on a tag uses that tag, a branch without a tag builds from
+# source (the release assets would not match its tree).
+PREBUILT_TAG="${MANGO_PREBUILT_TAG:-}"
+if [ -z "$PREBUILT_TAG" ] && [ -d "$SCRIPT_DIR/.git" ]; then
+    PREBUILT_TAG="$(git -C "$SCRIPT_DIR" describe --tags --exact-match 2>/dev/null || true)"
+fi
+PREBUILT_DIR=""                       # set by fetch_prebuilt on success
+PREBUILT_BASE_URL="https://github.com/Axforzi/mangoverlay/releases/download"
+
+# fetch_prebuilt: download the release assets for $PREBUILT_TAG into a cache
+# dir and verify the expected files are really there. On success sets
+# PREBUILT_DIR and returns 0; on any failure returns 1 (the caller falls back
+# to a local build, which keeps the installer resilient).
+fetch_prebuilt() {
+    [ -n "$PREBUILT_TAG" ] || return 1
+    [ "$FORCE_BUILD" -eq 1 ] && return 1
+
+    local cachedir="${XDG_CACHE_HOME:-$HOME/.cache}/mangoverlay/prebuilt/$PREBUILT_TAG"
+    if [ -z "$(ls -A "$cachedir" 2>/dev/null)" ]; then
+        info "Downloading precompiled assets for $PREBUILT_TAG..."
+        mkdir -p "$cachedir"
+        local url="$PREBUILT_BASE_URL/$PREBUILT_TAG/mangoverlay-assets-$PREBUILT_TAG.tar.gz"
+        if have curl; then
+            curl -fsSL "$url" -o "$cachedir/assets.tar.gz" \
+                || { rm -rf "$cachedir"; warn "Prebuilt download failed (curl): $url"; return 1; }
+        elif have wget; then
+            wget -q "$url" -O "$cachedir/assets.tar.gz" \
+                || { rm -rf "$cachedir"; warn "Prebuilt download failed (wget): $url"; return 1; }
+        else
+            warn "Neither curl nor wget is available; skipping precompiled assets."
+            return 1
+        fi
+        tar -xzf "$cachedir/assets.tar.gz" -C "$cachedir" \
+            || { rm -rf "$cachedir"; warn "Prebuilt archive corrupt: $url"; return 1; }
+        rm -f "$cachedir/assets.tar.gz"
+    else
+        info "Using cached precompiled assets for $PREBUILT_TAG."
+    fi
+
+    local missing=""
+    [ -s "$cachedir/overlay/libMangoHud.so" ]            || missing="$missing libMangoHud.so"
+    [ -s "$cachedir/overlay/libMangoHud_opengl.so" ]     || missing="$missing libMangoHud_opengl.so"
+    [ -s "$cachedir/lsfg/liblsfg-vk-layer.so" ]          || missing="$missing liblsfg-vk-layer.so"
+    [ -s "$cachedir/lsfg/lsfg-vk-cli" ]                  || missing="$missing lsfg-vk-cli"
+    if [ -n "$missing" ]; then
+        rm -rf "$cachedir"
+        warn "Prebuilt assets incomplete (missing:$missing); compiling locally."
+        return 1
+    fi
+    PREBUILT_DIR="$cachedir"
+    info "Precompiled assets ready in $PREBUILT_DIR"
+    return 0
+}
 
 CURRENT_STEP="pre-flight"
 trap 'err "Installation aborted (failed at: $CURRENT_STEP)"; exit 1' ERR
@@ -263,6 +328,11 @@ step_deps() {
         warn "No known package manager detected."
     fi
 
+    if [ -n "$PREBUILT_DIR" ]; then
+        info "Using precompiled assets: build toolchain not needed."
+        return 0
+    fi
+
     if [ "$SKIP_DEPS" -eq 1 ]; then
         info "Skipping deps (--skip-deps)."
         return 0
@@ -304,6 +374,10 @@ setup_mango_build() {
 build_overlay() {
     CURRENT_STEP="2/6 build overlay"
     step "2" "Build the overlay (MangoHud fork)"
+    if [ -n "$PREBUILT_DIR" ]; then
+        info "Using precompiled overlay from $PREBUILT_TAG release assets."
+        return 0
+    fi
     [ -d "$MANGO_SRC" ] || die "Overlay source not found: $MANGO_SRC"
 
     if [ -f "$MANGO_SRC/build/src/libMangoHud.so" ] && [ "$FORCE" -eq 0 ]; then
@@ -327,9 +401,16 @@ install_overlay_layer() {
     CURRENT_STEP="3/6 install overlay layer"
     step "3" "Install overlay layer"
     mkdir -p "$LIB_DIR" "$VK_DIR"
-    install -m 755 "$MANGO_SRC/build/src/libMangoHud.so" "$LIB_DIR/"
-    if [ -f "$MANGO_SRC/build/src/libMangoHud_opengl.so" ]; then
-        install -m 755 "$MANGO_SRC/build/src/libMangoHud_opengl.so" "$LIB_DIR/"
+    if [ -n "$PREBUILT_DIR" ]; then
+        # Precompiled assets: the CI workflow already applied every patch and
+        # built the libraries; we only place them and generate the manifest.
+        install -m 755 "$PREBUILT_DIR/overlay/libMangoHud.so" "$LIB_DIR/"
+        install -m 755 "$PREBUILT_DIR/overlay/libMangoHud_opengl.so" "$LIB_DIR/"
+    else
+        install -m 755 "$MANGO_SRC/build/src/libMangoHud.so" "$LIB_DIR/"
+        if [ -f "$MANGO_SRC/build/src/libMangoHud_opengl.so" ]; then
+            install -m 755 "$MANGO_SRC/build/src/libMangoHud_opengl.so" "$LIB_DIR/"
+        fi
     fi
 
     local json_lib_path="$LIB_DIR/libMangoHud.so"
@@ -411,6 +492,45 @@ install_wrapper() {
 install_lsfg() {
     CURRENT_STEP="5/6 install lsfg-vk upstream"
     step "5" "Install lsfg-vk (upstream)"
+
+    if [ -n "$PREBUILT_DIR" ]; then
+        # Precompiled assets: the CI workflow cloned upstream and applied the
+        # patches, so we only place the library + cli and write the manifest
+        # that cmake would have generated (with the absolute library_path the
+        # Vulkan loader needs; see the local-build branch below for the
+        # rationale on the config dir).
+        local prebuilt_lib=""
+        if [ -d "$PREFIX/.local/lib64" ]; then
+            prebuilt_lib="$PREFIX/.local/lib64/liblsfg-vk-layer.so"
+        else
+            prebuilt_lib="$PREFIX/.local/lib/liblsfg-vk-layer.so"
+        fi
+        mkdir -p "$(dirname "$prebuilt_lib")" "$BIN_DIR" "$VK_CONFIG_DIR"
+        install -m 755 "$PREBUILT_DIR/lsfg/liblsfg-vk-layer.so" "$prebuilt_lib"
+        install -m 755 "$PREBUILT_DIR/lsfg/lsfg-vk-cli" "$BIN_DIR/lsfg-vk-cli"
+
+        cat > "$VK_CONFIG_DIR/VkLayer_LSFGVK_frame_generation.json" <<EOF
+{
+  "file_format_version": "1.1.0",
+  "layer": {
+    "name": "VK_LAYER_LSFGVK_frame_generation",
+    "description": "Lossless Scaling frame generation layer",
+    "implementation_version": "2",
+    "library_path": "$prebuilt_lib",
+    "type": "GLOBAL",
+    "api_version": "1.4.350",
+    "disable_environment": {
+      "DISABLE_LSFGVK": "1"
+    }
+  }
+}
+EOF
+        PATCH_STATUS="prebuilt"
+        info "lsfg-vk installed from precompiled assets: $prebuilt_lib"
+        info "lsfg-vk JSON at $VK_CONFIG_DIR/VkLayer_LSFGVK_frame_generation.json"
+        return 0
+    fi
+
     for t in git cmake; do
         have "$t" || die "Missing '$t'. Run with --install-deps or install it manually."
     done
@@ -668,8 +788,12 @@ config_dll_and_configs() {
 }
 
 # --- Pre-flight: check sources and previous installation ----------------------
-if [ "$SKIP_OVERLAY" -eq 0 ]; then
-    [ -d "$MANGO_SRC" ] || die "Overlay source not found: $MANGO_SRC. If you run this script in a directory without the project sources, rerun via 'curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.3/install.sh | bash'."
+# Try the precompiled release assets first; on any failure PREBUILT_DIR stays
+# empty and the installer falls back to a full local build.
+fetch_prebuilt || true
+
+if [ "$SKIP_OVERLAY" -eq 0 ] && [ -z "$PREBUILT_DIR" ]; then
+    [ -d "$MANGO_SRC" ] || die "Overlay source not found: $MANGO_SRC. If you run this script in a directory without the project sources, rerun via 'curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.4/install.sh | bash'."
 fi
 
 HAS_PREVIOUS=0
@@ -719,6 +843,11 @@ fi
 config_dll_and_configs
 
 # --- Final summary ------------------------------------------------------------
+if [ -f "$PREFIX/.local/lib64/liblsfg-vk-layer.so" ]; then
+    LSFG_LIB_SHOW="$PREFIX/.local/lib64/liblsfg-vk-layer.so"
+else
+    LSFG_LIB_SHOW="$PREFIX/.local/lib/liblsfg-vk-layer.so"
+fi
 printf "\n%b\n" "${C_STEP}══════════════ Installation summary ══════════════${C_RESET}"
 info "Unified overlay:"
 printf '  · Vulkan layer: %s\n' "$VK_LAYER_JSON"
@@ -727,9 +856,13 @@ info "Wrapper:"
 printf '  · %s\n' "$BIN_MANGOVERLAY"
 info "lsfg-vk:"
 printf '  · Layer:         %s\n' "$VK_CONFIG_DIR/VkLayer_LSFGVK_frame_generation.json"
-printf '  · Library:       %s\n' "$PREFIX/.local/lib/liblsfg-vk-layer.so"
-printf '  · Source:        %s\n' "$LSFG_SRC"
-if [ "$PATCH_STATUS" != "skipped" ] && [ -d "$(dirname "$(readlink -f "$0")")/patches" ]; then
+printf '  · Library:       %s\n' "$LSFG_LIB_SHOW"
+if [ -n "$PREBUILT_DIR" ]; then
+    printf '  · Origin:        precompiled assets for %s\n' "$PREBUILT_TAG"
+else
+    printf '  · Source:        %s\n' "$LSFG_SRC"
+fi
+if [ "$PATCH_STATUS" != "skipped" ] && { [ -n "$PREBUILT_DIR" ] || [ -d "$(dirname "$(readlink -f "$0")")/patches" ]; }; then
     printf '  · lsfg-vk patches: %s\n' "$PATCH_STATUS"
 fi
 info "Configs:"
