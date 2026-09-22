@@ -14,22 +14,31 @@ diff --git a/lsfg-vk-config/src/config.cpp b/lsfg-vk-config/src/config.cpp
 index b56df0f..9618706 100644
 --- a/lsfg-vk-config/src/config.cpp
 +++ b/lsfg-vk-config/src/config.cpp
-@@ -94,6 +94,9 @@ Configuration utils::getOrDefault() {
+@@ -94,6 +94,14 @@ Configuration utils::getOrDefault() {
          const char* performanceMode{std::getenv("LSFGVK_PERFORMANCE_MODE")};
          if (performanceMode && *performanceMode != '\0')
              profile.performanceMode = std::string(performanceMode) == "1";
 +        const char* frameLimit{std::getenv("LSFGVK_FRAME_LIMIT")};
-+        if (frameLimit && *frameLimit != '\0')
-+            profile.frameLimit = static_cast<uint32_t>(std::stoul(frameLimit));
++        if (frameLimit && *frameLimit != '\0') {
++            try {
++                profile.frameLimit = static_cast<uint32_t>(std::stoul(frameLimit));
++            } catch (const std::exception&) {
++                // Non-numeric LSFGVK_FRAME_LIMIT: keep the default (0 = disabled).
++            }
++        }
  
          const char* colorSpace{std::getenv("LSFGVK_COLOR_SPACE")};
          if (colorSpace && *colorSpace != '\0')
-@@ -264,6 +267,8 @@ Configuration utils::readConfig(const std::filesystem::path& path) {
+@@ -264,6 +267,12 @@ Configuration utils::readConfig(const std::filesystem::path& path) {
                  profile.flowScale = get<float>(key, value);
              else if (key == "performance_mode")
                  profile.performanceMode = get<bool>(key, value);
 +            else if (key == "frame_limit")
-+                profile.frameLimit = get<uint32_t>(key, value);
++                try {
++                    profile.frameLimit = get<uint32_t>(key, value);
++                } catch (const std::exception&) {
++                    // Bad type for the opt-in frame_limit key: keep the default.
++                }
              else if (key == "color_space")
                  profile.colorSpace = parseColorSpace(get<std::string>(key, value));
              else if (key == "transfer_function")

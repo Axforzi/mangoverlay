@@ -5,7 +5,7 @@
 #
 # Usage:
 #   One-liner (downloads the whole project and installs):
-#     curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/master/install.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.0/install.sh | bash
 #   Or from a local clone:
 #     ./install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]
 #                  [--install-deps] [--dll <path>] [--yes] [--force]
@@ -49,15 +49,17 @@ have()  { command -v "$1" >/dev/null 2>&1; }
 SKIP_OVERLAY=0; SKIP_LSFG=0; SKIP_DEPS=0; INSTALL_DEPS=0
 FORCE=0; YES=0
 PREFIX="$HOME"; DLL_OVERRIDE=""
-# frame_limit patch state (set in install_lsfg); "skipped" is the default for
-# the final summary when --skip-lsfg skips its application.
+# lsfg-vk patch status (set in install_lsfg); "skipped" is the default for
+# the final summary when --skip-lsfg skips their application. Patches are
+# applied in lexicographic order: 01-frame-limit (independent) MUST come
+# before 02-config-hardening, which is generated against the 01 state.
 PATCH_STATUS="skipped"
 
 usage() {
     if [ -r "$0" ]; then sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
     else
         info "Usage:"
-        printf '   curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/master/install.sh | bash\n'
+        printf '   curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.0/install.sh | bash\n'
         printf '   install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]\n'
         printf '             [--install-deps] [--dll <path>] [--yes] [--force]\n'
         printf '             [--prefix <dir>] [--help]\n'
@@ -90,8 +92,10 @@ done
 if [ ! -d "$(dirname -- "$0")/MangoHud" ]; then
     info "Standalone run detected (curl | bash) — downloading mangoverlay sources..."
     BOOT_REPO="Axforzi/mangoverlay"
-    BOOT_BRANCH="master"
-    BOOT_URL="https://github.com/$BOOT_REPO/archive/refs/heads/$BOOT_BRANCH.tar.gz"
+    # Pinned to a release tag so the installer is reproducible: whoever runs
+    # the one-liner (which points at this tag) also downloads the same tag.
+    BOOT_BRANCH="v0.1.0"
+    BOOT_URL="https://github.com/$BOOT_REPO/archive/refs/tags/$BOOT_BRANCH.tar.gz"
     if ! have curl && ! have wget; then
         die "Neither curl nor wget is available; cannot download the sources."
     fi
@@ -421,21 +425,48 @@ install_lsfg() {
         git clone --depth 1 https://git.lsfg-vk.dev/lsfg-vk.git "$LSFG_SRC"
     fi
 
-    # Durable patch: adds the pre-generation FPS limiter per profile
-    # (frame_limit). Skipped if already applied (reverse-check OK); if
-    # upstream changed and the patch does not apply, it builds without it.
-    PATCH_FILE="$(dirname "$(readlink -f "$0")")/patches/lsfg-vk-frame-limit.patch"
-    PATCH_STATUS="skipped"
-    if [ -f "$PATCH_FILE" ]; then
-        if git -C "$LSFG_SRC" apply --check "$PATCH_FILE" 2>/dev/null; then
-            git -C "$LSFG_SRC" apply "$PATCH_FILE"
-            PATCH_STATUS="applied"
-            info "Patch applied: $(basename "$PATCH_FILE")"
-        elif git -C "$LSFG_SRC" apply --reverse --check "$PATCH_FILE" 2>/dev/null; then
-            PATCH_STATUS="applied (already present)"
-            info "Patch already applied, skipping"
+    # Durable patches for the lsfg-vk source, applied in lexicographic order
+    # (the filenames are numbered so 01-frame-limit lands before
+    # 02-config-hardening, which is generated on top of it). Each patch is
+    # skipped when already applied (reverse-check OK). When the reverse-check
+    # ALSO fails, the tree still builds as-is: that happens on upgrade paths
+    # where 02 has already changed the context around 01 (a fully patched
+    # tree), or when upstream moved on (we build without that patch).
+    PATCHES_DIR="$(dirname "$(readlink -f "$0")")/patches"
+    PATCH_STATUS="none"
+    for patch in "$PATCHES_DIR"/*.patch; do
+        [ -f "$patch" ] || continue
+        name="$(basename "$patch")"
+        if git -C "$LSFG_SRC" apply --check "$patch" 2>/dev/null; then
+            git -C "$LSFG_SRC" apply "$patch"
+            info "Patch applied: $name"
+            if [ "$PATCH_STATUS" = "none" ] || [ "$PATCH_STATUS" = "partial" ]; then
+                PATCH_STATUS="applied"
+            fi
+        elif git -C "$LSFG_SRC" apply --reverse --check "$patch" 2>/dev/null; then
+            info "Patch already applied, skipping: $name"
+            if [ "$PATCH_STATUS" = "none" ]; then
+                PATCH_STATUS="applied (already present)"
+            elif [ "$PATCH_STATUS" = "applied" ]; then
+                PATCH_STATUS="applied"
+            fi
         else
-            warn "Could not apply the frame_limit patch (upstream changed?); building without it."
+            # Either another patch already changed this patch's context (the
+            # tree is already fully patched) or upstream moved; either way the
+            # current tree state is the best we have and the build proceeds.
+            info "$name not cleanly applicable; keeping the current tree state (already patched, or upstream changed)."
+            if [ "$PATCH_STATUS" = "none" ]; then
+                PATCH_STATUS="partial"
+            fi
+        fi
+    done
+    # A failed reverse-check for an EARLIER patch usually means a LATER patch
+    # already changed its context: if the last patch is verifiably present,
+    # the whole ordered set is already applied (02 cannot land without 01).
+    if [ "$PATCH_STATUS" = "partial" ]; then
+        last_patch="$(ls "$PATCHES_DIR"/*.patch 2>/dev/null | sort | tail -n1)"
+        if [ -n "$last_patch" ] && git -C "$LSFG_SRC" apply --reverse --check "$last_patch" 2>/dev/null; then
+            PATCH_STATUS="applied (already present)"
         fi
     fi
 
@@ -638,7 +669,7 @@ config_dll_and_configs() {
 
 # --- Pre-flight: check sources and previous installation ----------------------
 if [ "$SKIP_OVERLAY" -eq 0 ]; then
-    [ -d "$MANGO_SRC" ] || die "Overlay source not found: $MANGO_SRC. If you run this script in a directory without the project sources, rerun via 'curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/master/install.sh | bash'."
+    [ -d "$MANGO_SRC" ] || die "Overlay source not found: $MANGO_SRC. If you run this script in a directory without the project sources, rerun via 'curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.0/install.sh | bash'."
 fi
 
 HAS_PREVIOUS=0
@@ -698,8 +729,8 @@ info "lsfg-vk:"
 printf '  · Layer:         %s\n' "$VK_CONFIG_DIR/VkLayer_LSFGVK_frame_generation.json"
 printf '  · Library:       %s\n' "$PREFIX/.local/lib/liblsfg-vk-layer.so"
 printf '  · Source:        %s\n' "$LSFG_SRC"
-if [ -f "${PATCH_FILE:-}" ]; then
-    printf '  · frame_limit patch: %s\n' "$PATCH_STATUS"
+if [ "$PATCH_STATUS" != "skipped" ] && [ -d "$(dirname "$(readlink -f "$0")")/patches" ]; then
+    printf '  · lsfg-vk patches: %s\n' "$PATCH_STATUS"
 fi
 info "Configs:"
 printf '  · %s\n' "$CONF_TOML"

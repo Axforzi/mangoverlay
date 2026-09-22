@@ -1,0 +1,238 @@
+diff --git a/lsfg-vk-config/src/config.cpp b/lsfg-vk-config/src/config.cpp
+index 32fdd28..0e0bc02 100644
+--- a/lsfg-vk-config/src/config.cpp
++++ b/lsfg-vk-config/src/config.cpp
+@@ -68,8 +68,13 @@ namespace {
+         if (noFP16 && *noFP16 != '\0')
+             config.allowHalfPrecision = std::string(noFP16) != "1";
+         const char* logLevel{std::getenv("LSFGVK_LOG_LEVEL")};
+-        if (logLevel && *logLevel != '\0')
+-            config.logLevel = parseLogLevel(std::string(logLevel));
++        if (logLevel && *logLevel != '\0') {
++            try {
++                config.logLevel = parseLogLevel(std::string(logLevel));
++            } catch (const std::exception&) {
++                // Unrecognized LSFGVK_LOG_LEVEL: keep the default (Info).
++            }
++        }
+         const char* logFile{std::getenv("LSFGVK_LOG_FILE")};
+         if (logFile && *logFile != '\0')
+             config.logFile = std::filesystem::path(logFile);
+@@ -86,11 +91,21 @@ Configuration utils::getOrDefault() {
+         profile.name = "(environment)";
+ 
+         const char* multiplier{std::getenv("LSFGVK_MULTIPLIER")};
+-        if (multiplier && *multiplier != '\0')
+-            profile.multiplier = static_cast<uint32_t>(std::stoul(multiplier));
++        if (multiplier && *multiplier != '\0') {
++            try {
++                profile.multiplier = static_cast<uint32_t>(std::stoul(multiplier));
++            } catch (const std::exception&) {
++                // Non-numeric LSFGVK_MULTIPLIER: keep the default (2x).
++            }
++        }
+         const char* flowScale{std::getenv("LSFGVK_FLOW_SCALE")};
+-        if (flowScale && *flowScale != '\0')
+-            profile.flowScale = std::stof(flowScale);
++        if (flowScale && *flowScale != '\0') {
++            try {
++                profile.flowScale = std::stof(flowScale);
++            } catch (const std::exception&) {
++                // Non-numeric LSFGVK_FLOW_SCALE: keep the default (1.0).
++            }
++        }
+         const char* performanceMode{std::getenv("LSFGVK_PERFORMANCE_MODE")};
+         if (performanceMode && *performanceMode != '\0')
+             profile.performanceMode = std::string(performanceMode) == "1";
+@@ -104,15 +119,30 @@ Configuration utils::getOrDefault() {
+         }
+ 
+         const char* colorSpace{std::getenv("LSFGVK_COLOR_SPACE")};
+-        if (colorSpace && *colorSpace != '\0')
+-            profile.colorSpace = parseColorSpace(std::string(colorSpace));
++        if (colorSpace && *colorSpace != '\0') {
++            try {
++                profile.colorSpace = parseColorSpace(std::string(colorSpace));
++            } catch (const std::exception&) {
++                // Unrecognized enum: keep the default (sRGB).
++            }
++        }
+         const char* transferFunction{std::getenv("LSFGVK_TRANSFER_FUNCTION")};
+-        if (transferFunction && *transferFunction != '\0')
+-            profile.transferFunction = parseTransferFunction(std::string(transferFunction));
++        if (transferFunction && *transferFunction != '\0') {
++            try {
++                profile.transferFunction = parseTransferFunction(std::string(transferFunction));
++            } catch (const std::exception&) {
++                // Unrecognized enum: keep the default (sRGB).
++            }
++        }
+ 
+         const char* pacingMode{std::getenv("LSFGVK_PACING_MODE")};
+-        if (pacingMode && *pacingMode != '\0')
+-            profile.pacingMode = parsePacingMode(std::string(pacingMode));
++        if (pacingMode && *pacingMode != '\0') {
++            try {
++                profile.pacingMode = parsePacingMode(std::string(pacingMode));
++            } catch (const std::exception&) {
++                // Unrecognized enum: keep the default (Vsync).
++            }
++        }
+         const char* overridePresentMode{std::getenv("LSFGVK_OVERRIDE_PRESENT_MODE")};
+         if (overridePresentMode && *overridePresentMode != '\0')
+             profile.overridePresentMode = std::string(overridePresentMode) == "1";
+@@ -190,6 +220,17 @@ namespace {
+             throw std::runtime_error("Invalid type for value '" + std::string(key) + "'");
+         return value.value(); // Else, try to parse
+     }
++
++    /// Same as get<T> but falls back to a sane default when the type is wrong.
++    /// Used for value keys so a single bad setting cannot abort the whole load.
++    template<typename T>
++    T getOr(const toml::key& key, const toml::node& node, const T& fallback) {
++        try {
++            return get<T>(key, node);
++        } catch (const std::exception&) {
++            return fallback;
++        }
++    }
+     /// Expand `~` to the home directory if present
+     std::filesystem::path expandHome(const std::string& path) {
+         if (!path.starts_with('~'))
+@@ -235,13 +276,28 @@ Configuration utils::readConfig(const std::filesystem::path& path) {
+         throw std::runtime_error("Invalid global section in configuration");
+     for (const auto& [key, value] : globalTbl.is_table() ? *globalTbl.as_table() : toml::table{}) {
+         if (key == "allow_fp16")
+-            config.allowHalfPrecision = get<bool>(key, value);
+-        else if (key == "dll")
+-            config.dll = expandHome(get<std::string>(key, value));
+-        else if (key == "log_level")
+-            config.logLevel = parseLogLevel(get<std::string>(key, value));
+-        else if (key == "log_file")
+-            config.logFile = expandHome(get<std::string>(key, value));
++            config.allowHalfPrecision = getOr<bool>(key, value, true);
++        else if (key == "dll") {
++            try {
++                config.dll = expandHome(get<std::string>(key, value));
++            } catch (const std::exception&) {
++                // Bad dll type: keep no explicit dll path.
++            }
++        }
++        else if (key == "log_level") {
++            try {
++                config.logLevel = parseLogLevel(get<std::string>(key, value));
++            } catch (const std::exception&) {
++                // Unrecognized log_level: keep the default (Info).
++            }
++        }
++        else if (key == "log_file") {
++            try {
++                config.logFile = expandHome(get<std::string>(key, value));
++            } catch (const std::exception&) {
++                // Bad log_file type: keep no log file.
++            }
++        }
+         else
+             throw std::runtime_error("Unknown key in [global] section: " + std::string(key));
+     }
+@@ -255,23 +311,31 @@ Configuration utils::readConfig(const std::filesystem::path& path) {
+         Profile& profile{config.profiles.emplace_back()};
+         for (const auto& [key, value] : *profileTbl.as_table()) {
+             if (key == "name")
+-                profile.name = get<std::string>(key, value);
++                profile.name = getOr<std::string>(key, value, "");
+             else if (key == "active_in")
+                 if (value.is_string()) {
+-                    profile.activeIn.push_back(get<std::string>(key, value));
++                    try {
++                        profile.activeIn.push_back(get<std::string>(key, value));
++                    } catch (const std::exception&) {
++                        // Bad entry: keep the list as-is.
++                    }
+                 } else if (value.is_array()) {
+                     for (const auto& entry : *value.as_array()) {
+-                        profile.activeIn.push_back(get<std::string>(key, entry));
++                        try {
++                            profile.activeIn.push_back(get<std::string>(key, entry));
++                        } catch (const std::exception&) {
++                            // Bad array entry: keep the list as-is.
++                        }
+                     }
+                 } else {
+                     throw std::runtime_error("Invalid type for active_in");
+                 }
+             else if (key == "multiplier")
+-                profile.multiplier = get<uint32_t>(key, value);
++                profile.multiplier = getOr<uint32_t>(key, value, 2u);
+             else if (key == "flow_scale")
+-                profile.flowScale = get<float>(key, value);
++                profile.flowScale = getOr<float>(key, value, 1.0F);
+             else if (key == "performance_mode")
+-                profile.performanceMode = get<bool>(key, value);
++                profile.performanceMode = getOr<bool>(key, value, false);
+             else if (key == "frame_limit")
+                 try {
+                     profile.frameLimit = get<uint32_t>(key, value);
+@@ -279,15 +343,27 @@ Configuration utils::readConfig(const std::filesystem::path& path) {
+                     // Bad type for the opt-in frame_limit key: keep the default.
+                 }
+             else if (key == "color_space")
+-                profile.colorSpace = parseColorSpace(get<std::string>(key, value));
++                try {
++                    profile.colorSpace = parseColorSpace(get<std::string>(key, value));
++                } catch (const std::exception&) {
++                    // Unrecognized enum: keep the default (sRGB).
++                }
+             else if (key == "transfer_function")
+-                profile.transferFunction = parseTransferFunction(get<std::string>(key, value));
++                try {
++                    profile.transferFunction = parseTransferFunction(get<std::string>(key, value));
++                } catch (const std::exception&) {
++                    // Unrecognized enum: keep the default (sRGB).
++                }
+             else if (key == "pacing_mode" || key == "pacing")
+-                profile.pacingMode = parsePacingMode(get<std::string>(key, value));
++                try {
++                    profile.pacingMode = parsePacingMode(get<std::string>(key, value));
++                } catch (const std::exception&) {
++                    // Unrecognized enum: keep the default (Vsync).
++                }
+             else if (key == "override_present_mode")
+-                profile.overridePresentMode = get<bool>(key, value);
++                profile.overridePresentMode = getOr<bool>(key, value, true);
+             else if (key == "preserve_swapchain_image_count")
+-                profile.preserveSwapchainImageCount = get<bool>(key, value);
++                profile.preserveSwapchainImageCount = getOr<bool>(key, value, false);
+             else
+                 throw std::runtime_error("Unknown key in profile section: " + std::string(key));
+         }
+diff --git a/lsfg-vk-layer/src/hooks.cpp b/lsfg-vk-layer/src/hooks.cpp
+index 08b6f42..1531958 100644
+--- a/lsfg-vk-layer/src/hooks.cpp
++++ b/lsfg-vk-layer/src/hooks.cpp
+@@ -26,7 +26,24 @@
+ using namespace lsfgvk;
+ using namespace lsfgvk::layer;
+ 
+-layer::Layer::Layer() : m_configuration(utils::getOrDefault()) {
++namespace {
++    /// Load the configuration without crashing the game: a corrupt config
++    /// (bad type, out-of-range value, unknown key, ...) used to throw out of
++    /// the constructor and escape the Vulkan C ABI. On any load failure we
++    /// log the error and fall back to an empty configuration, which makes
++    /// identifyProcess() return nullopt and unloads the layer (no FG, no HUD).
++    utils::Configuration loadConfigSafely() {
++        try {
++            return utils::getOrDefault();
++        } catch (const std::exception& err) {
++            LOG(Error) << "Failed to load lsfg-vk configuration: " << err.what()
++                       << "; loading the layer without frame generation";
++            return utils::Configuration{};
++        }
++    }
++}
++
++layer::Layer::Layer() : m_configuration(loadConfigSafely()) {
+     auto result{utils::identifyProcess(this->m_configuration)};
+     if (!result.has_value()) // If no profile exists, the layer will be unloaded
+         return;
