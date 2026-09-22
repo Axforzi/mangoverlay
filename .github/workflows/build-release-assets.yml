@@ -48,7 +48,7 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y \
-            meson ninja-build cmake g++ git pkg-config glslang-tools \
+            python3-mako meson ninja-build cmake g++ pkg-config glslang-tools \
             libx11-dev libdbus-1-dev libxnvctrl-dev libwayland-dev \
             libxkbcommon-dev libdrm-dev libpciaccess-dev libvulkan-dev
 
