@@ -55,7 +55,7 @@ measures the frames *after* generation.
 Downloads the project and installs everything in one shot:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.1/install.sh | bash
 ```
 
 The script detects it is not running from a local clone, downloads and
