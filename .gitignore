@@ -19,3 +19,5 @@ layer-test/
 # Misc
 *.log
 .DS_Store
+# Skill registry local (skill registry de opencode) — nunca versionar
+.atl/
