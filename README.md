@@ -50,9 +50,25 @@ measures the frames *after* generation.
 
 ## Install
 
-### One-shot installer
+### One-liner (recommended)
+
+Downloads the project and installs everything in one shot:
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/master/install.sh | bash
+```
+
+The script detects it is not running from a local clone, downloads and
+extracts the latest project sources to a temp dir and runs the full
+installer from there. No `chmod +x` and no sudo needed for the base
+install; sudo is only asked for the optional build deps and the
+`/usr/local/bin` symlink (both can be skipped).
+
+### Local clone
+
+```sh
+git clone https://github.com/Axforzi/mangoverlay
+cd mangoverlay
 ./install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]
              [--install-deps] [--dll <path>] [--yes] [--force]
              [--prefix <dir>] [--help]
