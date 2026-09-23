@@ -105,3 +105,102 @@ jobs:
               --notes "Precompiled assets (overlay + lsfg-vk) for install.sh."
           fi
           echo "Release asset ready for $TAG"
+
+  install-matrix:
+    # Runs the real one-liner (curl | bash) in containers for the main
+    # distros, against the precompiled assets built by the build job.
+    # Every release tag re-validates the installer end-to-end; also runnable
+    # manually (workflow_dispatch) against master.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        container:
+          - archlinux:latest
+          - fedora:latest
+          - debian:12
+          - ubuntu:22.04
+          - ubuntu:24.04
+    container:
+      image: ${{ matrix.container }}
+    steps:
+      - name: Resolve installer ref (tag or master)
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "REF=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          else
+            echo "REF=master" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install curl/tar (distro-specific)
+        run: |
+          if command -v pacman >/dev/null 2>&1; then
+            pacman -Sy --noconfirm curl tar >/dev/null
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf -y install curl tar >/dev/null
+          else
+            apt-get update -qq && apt-get install -y -qq curl tar
+          fi
+
+      - name: Run installer one-liner (prebuilt path)
+        run: |
+          echo "glibc: $(getconf GNU_LIBC_VERSION)"
+          curl -fsSL "https://raw.githubusercontent.com/Axforzi/mangoverlay/$REF/install.sh" \
+            | bash -s -- --yes
+          test -d "$HOME/.local/share/vulkan/implicit_layer.d" || exit 1
+          test -x "$HOME/.local/bin/mangoverlay" || {
+            test -x /usr/local/bin/mangoverlay || exit 1
+          }
+
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-matrix-${{ matrix.container }}
+          path: |
+            /tmp/*.log
+            /tmp/mangoverlay-*.log
+
+  build-local:
+    # Validates the local-compile path (--build): old distro with old meson
+    # must be upgraded via pip (meson >= 0.60) and MangoHud must compile.
+    # Ubuntu 20.04 ships gcc-9 which cannot build lsfg-vk (needs C++20),
+    # so --skip-lsfg is expected there.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: ubuntu:20.04
+    steps:
+      - name: Resolve installer ref (tag or master)
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "REF=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          else
+            echo "REF=master" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install curl/tar
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq && apt-get install -y -qq curl tar
+
+      - name: Run installer one-liner (build-local with --skip-lsfg)
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          curl -fsSL "https://raw.githubusercontent.com/Axforzi/mangoverlay/$REF/install.sh" \
+            | bash -s -- --yes --install-deps --skip-lsfg
+          test -x /usr/local/bin/mangoverlay || exit 1
+          meson --version | awk -F. '{ exit !($1*100+$2 >= 60) }' \
+            || { echo "meson still < 0.60"; exit 1; }
+
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-local-diagnostics
+          path: |
+            /tmp/*.log
+            /tmp/mangoverlay-*.log
