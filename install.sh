@@ -176,8 +176,9 @@ PREBUILT_BASE_URL="https://github.com/Axforzi/mangoverlay/releases/download"
 # shipping an install that breaks at runtime.
 MIN_GLIBC="2.35"
 glibc_version() {
-    # "2.35" -> 235 ; empty on non-glibc libcs (e.g. musl)
-    getconf GNU_LIBC_VERSION 2>/dev/null | awk -F. '{print $1*100+$2}'
+    # "2.35" -> 235 ; empty on non-glibc libcs (e.g. musl).
+    # getconf prints a prefix ("glibc 2.43"), so take the last field first.
+    getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}' | awk -F. '{print $1*100+$2}'
 }
 prebuilt_supported_by_glibc() {
     local gv min_ver
@@ -252,6 +253,24 @@ CURRENT_STEP="pre-flight"
 trap 'err "Installation aborted (failed at: $CURRENT_STEP)"; exit 1' ERR
 
 # --- Utilities ---------------------------------------------------------------
+# Reads a line from the user. Falls back to /dev/tty so interactive prompts
+# still work when the script runs through a pipe (curl ... | bash), where
+# stdin is already exhausted. Returns 1 only when no tty exists at all.
+read_user_input() {
+    if [ -t 0 ]; then
+        read -r "$1"
+        return $?
+    fi
+    # stdin is a pipe (curl ... | bash): ask on the controlling terminal.
+    # The {} group silences the shell's open error when there is no terminal.
+    if { exec 3< /dev/tty; } 2>/dev/null; then
+        read -r "$1" <&3
+        exec 3<&-
+        return $?
+    fi
+    return 1
+}
+
 ask_yes_no() {
     # ask_yes_no "<prompt>" <default: y|n>  → 0 = yes, 1 = no
     local prompt="$1" default="$2" ans
@@ -260,7 +279,7 @@ ask_yes_no() {
     fi
     while :; do
         printf '%s ' "$prompt"
-        if ! read -r ans; then           # EOF: use default
+        if ! read_user_input ans; then     # EOF: use default
             [ "$default" = "y" ]; return $?
         fi
         [ -z "$ans" ] && ans="$default"
@@ -295,28 +314,28 @@ install_build_deps() {
     case "$PKG_MGR" in
         apt)
             pkgs="meson ninja-build cmake g++ git pkg-config glslang-tools \
-libx11-dev libdbus-1-dev libxnvctrl-dev libwayland-dev libxkbcommon-dev \
-libdrm-dev libpciaccess-dev libvulkan-dev"
+python3-mako libx11-dev libdbus-1-dev libxnvctrl-dev libwayland-dev \
+libxkbcommon-dev libdrm-dev libpciaccess-dev libvulkan-dev"
             ;;
         dnf)
             pkgs="meson ninja-build cmake gcc-c++ git pkgconf-pkg-config \
-glslang libX11-devel dbus-devel libXNVCtrl-devel wayland-devel \
+glslang python3-mako libX11-devel dbus-devel libXNVCtrl-devel wayland-devel \
 libxkbcommon-devel libdrm-devel libpciaccess-devel vulkan-headers"
             ;;
         pacman)
-            pkgs="meson ninja cmake gcc git pkgconf glslang libx11 dbus \
+            pkgs="meson ninja cmake gcc git pkgconf glslang python-mako libx11 dbus \
 libxnvctrl wayland libxkbcommon libdrm libpciaccess vulkan-headers"
             ;;
         zypper)
-            pkgs="meson ninja cmake gcc-c++ git pkg-config glslang \
+            pkgs="meson ninja cmake gcc-c++ git pkg-config glslang python3-mako \
 libX11-devel dbus-1-devel libxnvctrl-devel wayland-devel libxkbcommon-devel \
 libdrm-devel libpciaccess-devel vulkan-headers"
             ;;
         emerge)
             pkgs="dev-util/meson dev-util/ninja dev-util/cmake sys-devel/gcc \
-dev-vcs/git dev-util/pkgconf dev-util/glslang x11-libs/libX11 sys-libs/dbus \
-x11-libs/libXNVCtrl dev-libs/wayland x11-libs/libxkbcommon x11-libs/libdrm \
-x11-libs/libpciaccess dev-util/vulkan-headers"
+dev-vcs/git dev-util/pkgconf dev-util/glslang dev-python/mako x11-libs/libX11 \
+sys-libs/dbus x11-libs/libXNVCtrl dev-libs/wayland x11-libs/libxkbcommon \
+x11-libs/libdrm x11-libs/libpciaccess dev-util/vulkan-headers"
             ;;
         *)
             die "Unknown package manager. Install manually: \
@@ -709,7 +728,7 @@ prompt_dll_manual() {
         info "The window appears right after this line."
         info "If you do not have the file at hand, cancel the selector and we continue anyway."
         printf '%s' "Press Enter to continue... " >&2
-        read -r _ || return 1
+        read_user_input _ || return 1
         info ""
     fi
     if have zenity; then
@@ -725,7 +744,7 @@ prompt_dll_manual() {
         info "dll not found. Enter the path manually (Enter to skip):"
         while :; do
             printf 'Path to lsfg-vk.dll: ' >&2
-            if ! read -r picked; then return 1; fi
+            if ! read_user_input picked; then return 1; fi
             if [ -z "$picked" ]; then return 1; fi
             if [ -f "$picked" ]; then break; fi
             err "The file does not exist: $picked"
