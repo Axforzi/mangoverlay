@@ -319,22 +319,22 @@ install_build_deps() {
     case "$PKG_MGR" in
         apt)
             pkgs="meson ninja-build cmake g++ git pkg-config glslang-tools \
-python3-mako libx11-dev libdbus-1-dev libxnvctrl-dev libwayland-dev \
+python3-mako python3-pip libx11-dev libdbus-1-dev libxnvctrl-dev libwayland-dev \
 libxkbcommon-dev libdrm-dev libpciaccess-dev libvulkan-dev"
             ;;
         dnf)
             pkgs="meson ninja-build cmake gcc-c++ git pkgconf-pkg-config \
-glslang python3-mako libX11-devel dbus-devel libXNVCtrl-devel wayland-devel \
-libxkbcommon-devel libdrm-devel libpciaccess-devel vulkan-headers"
+glslang python3-mako python3-pip libX11-devel dbus-devel libXNVCtrl-devel \
+wayland-devel libxkbcommon-devel libdrm-devel libpciaccess-devel vulkan-headers"
             ;;
         pacman)
-            pkgs="meson ninja cmake gcc git pkgconf glslang python-mako libx11 dbus \
-libxnvctrl wayland libxkbcommon libdrm libpciaccess vulkan-headers"
+            pkgs="meson ninja cmake gcc git pkgconf glslang python-mako python-pip \
+libx11 dbus libxnvctrl wayland libxkbcommon libdrm libpciaccess vulkan-headers"
             ;;
         zypper)
             pkgs="meson ninja cmake gcc-c++ git pkg-config glslang python3-mako \
-libX11-devel dbus-1-devel libxnvctrl-devel wayland-devel libxkbcommon-devel \
-libdrm-devel libpciaccess-devel vulkan-headers"
+python3-pip libX11-devel dbus-1-devel libxnvctrl-devel wayland-devel \
+libxkbcommon-devel libdrm-devel libpciaccess-devel vulkan-headers"
             ;;
         emerge)
             pkgs="dev-util/meson dev-util/ninja dev-util/cmake sys-devel/gcc \
@@ -360,6 +360,45 @@ meson, ninja, cmake, glslang, X11/Wayland/DBus/Vulkan headers."
     esac
 }
 
+meson_version_ok() {
+    # MangoHud's meson.build requires meson >= 0.60.0; e.g. Ubuntu 20.04
+    # ships 0.53.2, which fails at configure time with a cryptic error.
+    have meson || return 1
+    local v
+    v=$(meson --version 2>/dev/null | awk -F. '{print $1*10000+$2*100+$3}')
+    [ -n "$v" ] && [ "$v" -ge 6000 ]
+}
+
+ensure_modern_meson() {
+    # Upgrades a system meson that is older than 0.60 via pip.
+    meson_version_ok && return 0
+    local cur; cur=$(meson --version 2>/dev/null || echo "missing")
+    info "meson $cur is older than the required 0.60; upgrading via pip..."
+    have pip3 || have pip || {
+        warn "pip not found; install meson >= 0.60 manually (e.g. 'pip3 install meson')."
+        return 1
+    }
+    local pipbin; pipbin=$(command -v pip3 || command -v pip)
+    if ! "$pipbin" install --user 'meson>=0.60' >/dev/null 2>&1 &&
+       ! "$pipbin" install --user --break-system-packages 'meson>=0.60' >/dev/null 2>&1; then
+        warn "pip could not install meson; install meson >= 0.60 manually."
+        return 1
+    fi
+    # ~/.local/bin is not always on PATH during the same session.
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) PATH="$HOME/.local/bin:$PATH" ;;
+    esac
+    export PATH
+    hash -r 2>/dev/null || true
+    if meson_version_ok; then
+        info "meson upgraded to $(meson --version)."
+        return 0
+    fi
+    warn "meson is still older than 0.60 after the pip upgrade; build may fail."
+    return 1
+}
+
 check_toolchain() {
     # Returns 0 if the toolchain is complete; 1 if tools are missing
     local missing=""
@@ -370,6 +409,11 @@ check_toolchain() {
         for t in meson ninja; do
             have "$t" || missing="$missing $t"
         done
+        # Present but too old counts as missing: re-running deps can fix
+        # it (apt meson on old distros) instead of failing at configure.
+        if [ -z "$missing" ] && ! meson_version_ok; then
+            missing="$missing meson<0.60"
+        fi
     fi
     if [ -n "$missing" ]; then
         warn "Missing build tools:$missing"
@@ -404,11 +448,13 @@ step_deps() {
 
     if [ "$INSTALL_DEPS" -eq 1 ]; then
         install_build_deps
+        ensure_modern_meson || warn "Continuing anyway; meson may still be too old."
     elif [ "$YES" -eq 1 ]; then
         warn "Deps not installed (--yes mode without --install-deps)."
     else
         if ask_yes_no "Install build deps using your package manager (needs sudo)? [y/N]" n; then
             install_build_deps
+            ensure_modern_meson || warn "Continuing anyway; meson may still be too old."
         else
             warn "You can install them manually later; the build will fail if they are missing."
         fi
@@ -594,6 +640,16 @@ EOF
     for t in git cmake; do
         have "$t" || die "Missing '$t'. Run with --install-deps or install it manually."
     done
+
+    # lsfg-vk uses C++20 (std::span, std::ranges); old distro GCCs (e.g.
+    # Ubuntu 20.04's gcc-9) fail with confusing 'span: No such file or
+    # directory' / 'std::ranges has not been declared' errors.
+    if have gcc && ! gcc -std=c++20 -fsyntax-only -x c++ - </dev/null >/dev/null 2>&1; then
+        have g++ && g++ -std=c++20 -fsyntax-only -x c++ - </dev/null >/dev/null 2>&1 && {
+            die "lsfg-vk needs a C++20-capable compiler, but gcc is behind g++."
+        }
+        die "Your GCC cannot compile lsfg-vk (needs C++20, GCC >= 10). Install g++-10 or use --skip-lsfg."
+    fi
 
     if [ -d "$LSFG_SRC/.git" ]; then
         info "Updating existing clone at $LSFG_SRC"
