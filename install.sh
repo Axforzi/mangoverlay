@@ -71,6 +71,11 @@ usage() {
     exit 0
 }
 
+# Preserve the original arguments for the standalone bootstrap re-run: the
+# while loop below consumes $@ with shift, so without this copy every flag
+# (--yes, --install-deps, ...) was silently lost when the source tarball
+# was re-executed under curl | bash.
+BOOT_ARGS=("$@")
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --skip-overlay)  SKIP_OVERLAY=1 ;;
@@ -123,7 +128,7 @@ if [ ! -d "$(dirname -- "$0")/MangoHud" ]; then
     info "Running the installer from $BOOT_ROOT"
     # Carry the pinned tag into the re-run: it lets the inner script fetch
     # the precompiled release assets for exactly this version.
-    MANGO_PREBUILT_TAG="$BOOT_BRANCH" bash "$BOOT_ROOT/install.sh" "$@"
+    MANGO_PREBUILT_TAG="$BOOT_BRANCH" bash "$BOOT_ROOT/install.sh" "${BOOT_ARGS[@]}"
     rc=$?
     rm -rf "$BOOT_DIR"
     exit $rc
