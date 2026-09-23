@@ -55,7 +55,7 @@ measures the frames *after* generation.
 Downloads the project and installs everything in one shot:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.6/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.7/install.sh | bash
 ```
 
 The script detects it is not running from a local clone, downloads and
@@ -144,7 +144,7 @@ mangoverlay uninstall --purge-configs  # also removes your profiles
 Or via `curl` when the wrapper is broken or missing:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.6/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.7/uninstall.sh | bash
 ```
 
 By default your per-game configs (`~/.config/lsfg-vk/`) are **kept**; pass
