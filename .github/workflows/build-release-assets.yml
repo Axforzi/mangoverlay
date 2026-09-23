@@ -76,28 +76,7 @@ jobs:
       - name: Build overlay i386 (32-bit games)
         run: |
           cd MangoHud
-          cat > x86-i386.ini <<'EOF'
-[binaries]
-c = '/usr/bin/gcc'
-cpp = '/usr/bin/g++'
-ar = '/usr/bin/ar'
-strip = '/usr/bin/strip'
-pkgconfig = '/usr/bin/pkg-config'
-
-[properties]
-c_args = ['-m32']
-c_link_args = ['-m32']
-cpp_args = ['-m32']
-cpp_link_args = ['-m32']
-pkg_config_libdir = ['/usr/lib/i386-linux-gnu/pkgconfig', '/usr/share/pkgconfig']
-
-[host_machine]
-system = 'linux'
-cpu_family = 'x86'
-cpu = 'i686'
-endian = 'little'
-EOF
-          meson setup build32 --cross-file x86-i386.ini \
+          meson setup build32 --cross-file build-cross-i386.ini \
             --buildtype=release -Dmangohudctl=false \
             -Dwith_xnvctrl=disabled -Dmangoplot=disabled
           ninja -C build32
