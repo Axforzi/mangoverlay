@@ -1023,6 +1023,10 @@ tab_row_count()
       return 6;
    }
    if (s_tab == MENU_TAB_LSFGVK) {
+      /* OpenGL games never load the Vulkan layer, so frame generation cannot
+       * apply: show the explanatory notice + Back instead of the editor. */
+      if (!HUDElements.is_vulkan)
+         return 1;
       if (!s_lsfg.ok || s_profile < 0)
          return 1; /* Retry */
       /* Multiplier, Pacing, Flow scale, Performance mode, Override present mode, Frame limit */
@@ -1161,6 +1165,12 @@ menu_activate()
    }
 
    if (s_tab == MENU_TAB_LSFGVK) {
+      /* OpenGL games: the LSFGVK tab is a notice with a single Back row;
+       * Enter closes the menu. */
+      if (!HUDElements.is_vulkan) {
+         menu_close();
+         return;
+      }
       if (!s_lsfg.ok) {
          read_lsfg_config(s_lsfg);
          lsfg_auto_open();
@@ -1502,6 +1512,28 @@ draw_lsfg_tab(struct overlay_params& params)
 {
    (void)params;
 
+   if (!HUDElements.is_vulkan) {
+      /* OpenGL games never load the Vulkan layer, so the lsfg-vk frame
+       * generation can NOT be enabled for them: there is no Vulkan
+       * swapchain to inject into. The MangoHud HUD and the ENV vars still
+       * apply, so only this tab is replaced by an explanatory notice. */
+      ImGui::TextColored(ImVec4(0.85f, 0.75f, 0.3f, 1.0f),
+                         "Frame generation requires Vulkan");
+      ImGui::Spacing();
+      ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 0.95f),
+                         "This game renders through OpenGL, so the");
+      ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 0.95f),
+                         "lsfg-vk layer is not loaded and no frame");
+      ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 0.95f),
+                         "generation profile can apply to it.");
+      ImGui::Spacing();
+      ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.45f, 0.9f),
+                         "MangoHud HUD options and the ENV tab still work.");
+      ImGui::Spacing();
+      menu_row(s_sel == 0, "Back", "");
+      return;
+   }
+
    if (!s_lsfg.ok) {
       ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", s_lsfg.error.c_str());
       ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.45f, 0.9f), "Path: %s", s_lsfg.path.c_str());
@@ -1740,7 +1772,9 @@ void draw_overlay_menu(struct overlay_params& params)
       else if (s_sel == 1 + (int)MENU_ENV_TWEAKS_COUNT)
          desc = "Clear all: removes this game's whole env.conf section";
    } else if (s_tab == MENU_TAB_LSFGVK) {
-      if (!s_lsfg.ok) {
+      if (!HUDElements.is_vulkan) {
+         desc = "Frame generation needs a Vulkan swapchain; OpenGL games cannot use it. Back closes the menu";
+      } else if (!s_lsfg.ok) {
          desc = "Retry: reload the lsfg-vk config file";
       } else if (s_profile < 0) {
          desc = "No profile for this game yet; Enter creates one";

@@ -7,14 +7,20 @@ name: build-release-assets
 #   https://github.com/Axforzi/mangoverlay/releases/download/<TAG>/mangoverlay-assets-<TAG>.tar.gz
 #
 # Layout inside the archive (flat, no host paths):
-#   overlay/libMangoHud.so
-#   overlay/libMangoHud_opengl.so
+#   overlay/libMangoHud.so              (x86_64 Vulkan layer)
+#   overlay/libMangoHud_opengl.so       (x86_64 GL path)
+#   overlay/libMangoHud_shim.so         (x86_64 GL preload shim)
+#   overlay/lib32/libMangoHud.so        (i386 Vulkan layer; 32-bit games)
+#   overlay/lib32/libMangoHud_opengl.so (i386 GL path)
+#   overlay/lib32/libMangoHud_shim.so   (i386 GL preload shim)
 #   lsfg/liblsfg-vk-layer.so
 #   lsfg/lsfg-vk-cli
 #
 # Runner: ubuntu-22.04 is the oldest runner GitHub still provides (glibc
 # 2.35), so the binaries work on the widest set of user distros. Users on
 # older glibc must still install with --build (compile locally).
+# The i386 build uses the same glibc 2.35 (multilib -m32) so both arches
+# share the prebuilt policy.
 
 on:
   push:
@@ -51,13 +57,52 @@ jobs:
             python3-mako meson ninja-build cmake g++ pkg-config glslang-tools \
             libx11-dev libdbus-1-dev libxnvctrl-dev libwayland-dev \
             libxkbcommon-dev libdrm-dev libpciaccess-dev libvulkan-dev
+          # 32-bit toolchain + dev headers for the i386 layer (Terraria-style
+          # 32-bit games run DXVK on a 32-bit Vulkan loader).
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -y
+          sudo apt-get install -y gcc-multilib g++-multilib \
+            libvulkan-dev:i386 libx11-dev:i386 libdbus-1-dev:i386 \
+            libwayland-dev:i386 libxkbcommon-dev:i386 libdrm-dev:i386 \
+            libpciaccess-dev:i386
 
-      - name: Build overlay (MangoHud fork)
+      - name: Build overlay (MangoHud fork, x86_64)
         run: |
           cd MangoHud
           meson setup build --buildtype=release -Dmangohudctl=true
           ninja -C build
           test -f build/src/libMangoHud.so || exit 1
+
+      - name: Build overlay i386 (32-bit games)
+        run: |
+          cd MangoHud
+          cat > x86-i386.ini <<'EOF'
+[binaries]
+c = '/usr/bin/gcc'
+cpp = '/usr/bin/g++'
+ar = '/usr/bin/ar'
+strip = '/usr/bin/strip'
+pkgconfig = '/usr/bin/pkg-config'
+
+[properties]
+c_args = ['-m32']
+c_link_args = ['-m32']
+cpp_args = ['-m32']
+cpp_link_args = ['-m32']
+pkg_config_libdir = ['/usr/lib/i386-linux-gnu/pkgconfig', '/usr/share/pkgconfig']
+
+[host_machine]
+system = 'linux'
+cpu_family = 'x86'
+cpu = 'i686'
+endian = 'little'
+EOF
+          meson setup build32 --cross-file x86-i386.ini \
+            --buildtype=release -Dmangohudctl=false \
+            -Dwith_xnvctrl=disabled -Dmangoplot=disabled
+          ninja -C build32
+          test -f build32/src/libMangoHud.so || exit 1
+          file build32/src/libMangoHud.so | grep -q 'ELF 32-bit' || exit 1
 
       - name: Build lsfg-vk (with patches)
         run: |
@@ -80,13 +125,21 @@ jobs:
       - name: Package assets
         run: |
           PKG=/tmp/assets
-          mkdir -p "$PKG/overlay" "$PKG/lsfg"
+          mkdir -p "$PKG/overlay/lib32" "$PKG/lsfg"
           cp MangoHud/build/src/libMangoHud.so "$PKG/overlay/"
           cp MangoHud/build/src/libMangoHud_opengl.so "$PKG/overlay/"
+          cp MangoHud/build/src/libMangoHud_shim.so "$PKG/overlay/"
+          cp MangoHud/build32/src/libMangoHud.so "$PKG/overlay/lib32/"
+          cp MangoHud/build32/src/libMangoHud_opengl.so "$PKG/overlay/lib32/"
+          cp MangoHud/build32/src/libMangoHud_shim.so "$PKG/overlay/lib32/"
           find /tmp/lsfg-vk/build -name 'liblsfg-vk-layer.so' -exec cp {} "$PKG/lsfg/" \;
           find /tmp/lsfg-vk/build -name 'lsfg-vk-cli' -exec cp {} "$PKG/lsfg/" \;
           test -s "$PKG/overlay/libMangoHud.so" || exit 1
           test -s "$PKG/overlay/libMangoHud_opengl.so" || exit 1
+          test -s "$PKG/overlay/libMangoHud_shim.so" || exit 1
+          test -s "$PKG/overlay/lib32/libMangoHud.so" || exit 1
+          test -s "$PKG/overlay/lib32/libMangoHud_opengl.so" || exit 1
+          test -s "$PKG/overlay/lib32/libMangoHud_shim.so" || exit 1
           test -s "$PKG/lsfg/liblsfg-vk-layer.so" || exit 1
           test -s "$PKG/lsfg/lsfg-vk-cli" || exit 1
           tar -C "$PKG" -czf "/tmp/mangoverlay-assets-$TAG.tar.gz" overlay lsfg

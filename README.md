@@ -30,9 +30,14 @@ activate, **B** to go back/close, and **Start + Select** to open/close it.
 - `mangoverlay` — a launch wrapper you set as a game's launch option in
   Steam (`mangoverlay %command%`). It:
   1. enables the overlay's own implicit Vulkan layer
-     (`VK_LAYER_MANGOHUD_overlay_unified_x86_64`),
+     (`VK_LAYER_MANGOHUD_overlay_unified_x86_64`) — and the 32-bit variant
+     (`..._i386`) for 32-bit games (e.g. Terraria under Proton/DXVK),
   2. disables the system MangoHud so there is no double HUD,
-  3. reads `~/.config/lsfg-vk/env.conf` and exports the section matching the
+  3. preloads the GL shim automatically for games that render through
+     OpenGL (no Vulkan instance — LÖVE engines, wined3d fallbacks...).
+     The shim is inert for Vulkan games, and a per-game
+     `MANGOHUD_DLSYM=0` in `env.conf` disables it if ever needed,
+  4. reads `~/.config/lsfg-vk/env.conf` and exports the section matching the
      running game before the game starts.
 - A MangoHud fork — the overlay + unified menu that also manages lsfg-vk
   profiles and env vars from inside the game.
@@ -40,6 +45,10 @@ activate, **B** to go back/close, and **Start + Select** to open/close it.
 
 The layer order is `game → LSFGVK → mangoverlay → driver`, so the HUD
 measures the frames *after* generation.
+
+Frame generation itself always needs a Vulkan swapchain: in an OpenGL game
+the **Frame generation** menu tab shows a notice explaining that it is not
+available (the HUD options and per-game env vars keep working normally).
 
 ## Requirements
 
@@ -121,6 +130,15 @@ For each game you want the overlay on, set its launch options to:
 mangoverlay %command%
 ```
 
+Supported game types:
+
+- **Vulkan 64-bit** games — full overlay + frame generation.
+- **Vulkan 32-bit** games (32-bit native, or Proton/DXVK titles like
+  Terraria) — full overlay; the wrapper picks the i386 layer automatically.
+- **OpenGL** games (native GL, or Proton titles using an OpenGL renderer
+  such as LÖVE) — full HUD + menu, but **no frame generation** (it needs a
+  Vulkan swapchain); the lsfg tab explains this in-game.
+
 Then in-game:
 
 | Action            | Input             |
@@ -187,3 +205,6 @@ overlay/
 - **Double HUD?** The wrapper sets `DISABLE_MANGOHUD=1` for the game so the
   system MangoHud layer skips it; having both MangoHud forks disabled/enabled
   per game is the expected design.
+- **No frame generation in an OpenGL game?** That is expected: lsfg-vk
+  injects after a Vulkan swapchain, and OpenGL games never create one. The
+  HUD readout and the per-game env vars still apply.

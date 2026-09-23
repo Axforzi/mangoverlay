@@ -57,6 +57,48 @@ ENV_CONF="${MANGOVERLAY_ENV_CONF:-$HOME/.config/lsfg-vk/env.conf}"
 #   mangoverlay uninstall              # ask, then remove
 #   mangoverlay uninstall --yes        # non-interactive
 #   mangoverlay uninstall --purge-configs  # ALSO remove ~/.config/lsfg-vk/
+# --- Automatic OpenGL support (no manual flags needed) ---------------------
+# The Vulkan-only layer never loads for games that create no Vulkan instance
+# (e.g. LÖVE/OpenGL engines like Balatro), leaving them without the overlay.
+# MangoHud ships a GL shim that intercepts GLX/EGL calls; we preload it
+# unconditionally, exactly like the official `mangohud %command%` script. It
+# is INERT for Vulkan games (the dlsym/GL hooks only fire when the game
+# actually calls GL symbols) and the GL path self-disables under zink so the
+# Vulkan layer stays authoritative -- no double HUD.
+# Per-game escape hatch: set MANGOHUD_DLSYM=0 in the game's [section] in
+# env.conf to disable GL hooking for that game only; it is exported after
+# this block and wins.
+# Self-locate the install prefix (same logic as `uninstall`) so the shim is
+# found whether mangoverlay runs from $HOME/.local/bin or a --prefix install.
+mangoverlay_prefix() {
+   _real="$0"; _hops=0; _tgt=""
+   while [ -L "$_real" ] && [ "$_hops" -lt 8 ]; do
+      _tgt="$(readlink "$_real" 2>/dev/null)" || break
+      case "$_tgt" in
+         /*) _real="$_tgt" ;;
+         *)  _real="$(dirname "$_real")/$_tgt" ;;
+      esac
+      _hops=$((_hops + 1))
+   done
+   case "$_real" in
+      /*) : ;;
+      *)  _real="$PWD/$_real" ;;
+   esac
+   case "$_real" in
+      */.local/bin/mangoverlay)
+         _cand="$(dirname "$(dirname "$(dirname "$_real")")")"
+         # sanity: only trust a path that looks like a real install
+         if [ -d "$_cand/.local/share/vulkan/implicit_layer.d" ] ||
+            [ -d "$_cand/.local/lib/mangoverlay" ] ||
+            [ -f "$_cand/.local/bin/mangoverlay" ]; then
+            printf '%s\n' "$_cand"
+            return
+         fi
+         ;;
+   esac
+   printf '%s\n' "$HOME"
+}
+
 # Removes the overlay layer, this wrapper, the lsfg-vk layer/tools/cache and
 # the shell PATH block. Configs are kept unless --purge-configs. Never
 # touches foreign files.
@@ -138,9 +180,15 @@ if [ "$1" = "uninstall" ]; then
 
    # overlay layer + libs
    [ -f "$_vk_layer_json" ] && rm -f -- "$_vk_layer_json" && printf 'removed %s\n' "$_vk_layer_json"
+   [ -f "$_vk_dir/MangoHud_overlay_unified_i386.json" ] && rm -f -- "$_vk_dir/MangoHud_overlay_unified_i386.json" && printf 'removed %s\n' "$_vk_dir/MangoHud_overlay_unified_i386.json"
    [ -f "$_vk_dir/MangoHud.json" ] && rm -f -- "$_vk_dir/MangoHud.json"
    [ -f "$_lib_dir/libMangoHud.so" ] && rm -f -- "$_lib_dir/libMangoHud.so"
    [ -f "$_lib_dir/libMangoHud_opengl.so" ] && rm -f -- "$_lib_dir/libMangoHud_opengl.so"
+   [ -f "$_lib_dir/libMangoHud_shim.so" ] && rm -f -- "$_lib_dir/libMangoHud_shim.so"
+   [ -f "$_lib_dir/lib32/libMangoHud.so" ] && rm -f -- "$_lib_dir/lib32/libMangoHud.so"
+   [ -f "$_lib_dir/lib32/libMangoHud_opengl.so" ] && rm -f -- "$_lib_dir/lib32/libMangoHud_opengl.so"
+   [ -f "$_lib_dir/lib32/libMangoHud_shim.so" ] && rm -f -- "$_lib_dir/lib32/libMangoHud_shim.so"
+   rmdir "$_lib_dir/lib32" 2>/dev/null
    rmdir "$_lib_dir" 2>/dev/null && printf 'removed dir %s\n' "$_lib_dir" || true
 
    # this wrapper (the installed copy only)
@@ -355,6 +403,56 @@ if [ "$1" = "--list-profiles" ] || [ "$1" = "--clean-profiles" ]; then
    _collapse_blanks < "$ENV_CONF" > "$ENV_CONF.tmp" && mv "$ENV_CONF.tmp" "$ENV_CONF"
    [ "$_removed" -gt 0 ] && printf 'done, %d profile(s) removed from both files\n' "$_removed"
    exit 0
+fi
+
+# --- Automatic OpenGL activation -------------------------------------------
+# Opens the GLX/EGL + dlsym shim so games that never create a Vulkan instance
+# (LÖVE/OpenGL engines, wined3d fallbacks, ...) still get the unified overlay
+# and menu. The shim is INERT for Vulkan games: no GL symbol call, no hooks,
+# no double HUD (and under zink the GL path skips itself and defers to the
+# Vulkan layer). Mirrors the official mangohud %command% behavior without any
+# per-game flag. Per-game override stays available: MANGOHUD_DLSYM=0 in the
+# game's env.conf section is exported AFTER this block and wins.
+_shim_prefix="$(mangoverlay_prefix)"
+_shim_dir="$_shim_prefix/.local/lib/mangoverlay"
+_shim_so="$_shim_dir/libMangoHud_shim.so"
+# Pick the 32-bit shim only when the *real* game binary is 32-bit (native ELF
+# or PE32 .exe launched via Proton/wine). Unknown targets keep the default
+# 64-bit shim: GL-native 32-bit games are rare, and a wrong-class PRELOAD is
+# only a loader warning, never a crash.
+if [ -f "$_shim_so" ] || [ -f "$_shim_dir/lib32/libMangoHud_shim.so" ]; then
+   _is32=0
+   for _a in "$@"; do
+      case "$_a" in -*) continue ;; esac
+      _c=$(basename -- "$_a" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+      case "$_c" in
+         steam-launch-wrapper|steam-launcher|gamemoderun|game-performance|reaper|steamlaunch|appid=*|*entry-point*|--verb=*|umu-run|umu_run.py|--)
+            continue ;;
+      esac
+      if [ -f "$_a" ]; then
+         case "$(file -Lb -- "$_a" 2>/dev/null)" in
+            *ELF\ 32-bit*|PE32\ executable*) _is32=1 ;;
+            *ELF\ 64-bit*|PE32+\ executable*) _is32=0 ;;
+         esac
+         break
+      fi
+   done
+   if [ "$_is32" = "1" ]; then
+      if [ -f "$_shim_dir/lib32/libMangoHud_shim.so" ]; then
+         _shim_so="$_shim_dir/lib32/libMangoHud_shim.so"
+      else
+         # 32-bit game but no 32-bit shim installed: never preload the
+         # 64-bit shim into a 32-bit process (loader warning, no HUD).
+         _shim_so=""
+      fi
+   fi
+   if [ -f "$_shim_so" ]; then
+      export MANGOHUD_DLSYM=1
+      case ":${LD_PRELOAD-}:" in
+         *":$_shim_so:"*) : ;;                   # already preloaded (stacked wrappers)
+         *) export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}$_shim_so" ;;
+      esac
+   fi
 fi
 
 # Exports a "KEY=VALUE" pair; values with spaces or quotes are cleaned. The

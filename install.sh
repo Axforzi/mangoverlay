@@ -507,15 +507,50 @@ install_overlay_layer() {
     CURRENT_STEP="3/6 install overlay layer"
     step "3" "Install overlay layer"
     mkdir -p "$LIB_DIR" "$VK_DIR"
+
+    # x86_64 layer + GL path
     if [ -n "$PREBUILT_DIR" ]; then
         # Precompiled assets: the CI workflow already applied every patch and
         # built the libraries; we only place them and generate the manifest.
         install -m 755 "$PREBUILT_DIR/overlay/libMangoHud.so" "$LIB_DIR/"
         install -m 755 "$PREBUILT_DIR/overlay/libMangoHud_opengl.so" "$LIB_DIR/"
+        if [ -s "$PREBUILT_DIR/overlay/libMangoHud_shim.so" ]; then
+            # GL shim (added v0.2.0): mangoverlay preloads it for OpenGL games.
+            install -m 755 "$PREBUILT_DIR/overlay/libMangoHud_shim.so" "$LIB_DIR/"
+        fi
     else
         install -m 755 "$MANGO_SRC/build/src/libMangoHud.so" "$LIB_DIR/"
         if [ -f "$MANGO_SRC/build/src/libMangoHud_opengl.so" ]; then
             install -m 755 "$MANGO_SRC/build/src/libMangoHud_opengl.so" "$LIB_DIR/"
+        fi
+        if [ -f "$MANGO_SRC/build/src/libMangoHud_shim.so" ]; then
+            install -m 755 "$MANGO_SRC/build/src/libMangoHud_shim.so" "$LIB_DIR/"
+        fi
+    fi
+
+    # 32-bit (i386) layer + GL shim: for 32-bit games (e.g. Terraria under
+    # Proton, which runs DXVK on a 32-bit Vulkan loader). The shim MUST live
+    # in lib32/ next to its libMangoHud_opengl.so so the shim's adjacent-lib
+    # loader finds the 32-bit GL library. Optional everywhere: systems without
+    # multilib simply skip these files.
+    if [ -n "$PREBUILT_DIR" ] && [ -s "$PREBUILT_DIR/overlay/lib32/libMangoHud.so" ]; then
+        mkdir -p "$LIB_DIR/lib32"
+        install -m 755 "$PREBUILT_DIR/overlay/lib32/libMangoHud.so" "$LIB_DIR/lib32/"
+        if [ -s "$PREBUILT_DIR/overlay/lib32/libMangoHud_opengl.so" ]; then
+            install -m 755 "$PREBUILT_DIR/overlay/lib32/libMangoHud_opengl.so" "$LIB_DIR/lib32/"
+        fi
+        if [ -s "$PREBUILT_DIR/overlay/lib32/libMangoHud_shim.so" ]; then
+            install -m 755 "$PREBUILT_DIR/overlay/lib32/libMangoHud_shim.so" "$LIB_DIR/lib32/"
+        fi
+    elif [ -f "$MANGO_SRC/build32/src/libMangoHud.so" ]; then
+        # Locally built with --build-32: mangoverlay/build32 (meson --native-file i386).
+        mkdir -p "$LIB_DIR/lib32"
+        install -m 755 "$MANGO_SRC/build32/src/libMangoHud.so" "$LIB_DIR/lib32/"
+        if [ -f "$MANGO_SRC/build32/src/libMangoHud_opengl.so" ]; then
+            install -m 755 "$MANGO_SRC/build32/src/libMangoHud_opengl.so" "$LIB_DIR/lib32/"
+        fi
+        if [ -f "$MANGO_SRC/build32/src/libMangoHud_shim.so" ]; then
+            install -m 755 "$MANGO_SRC/build32/src/libMangoHud_shim.so" "$LIB_DIR/lib32/"
         fi
     fi
 
@@ -544,6 +579,35 @@ install_overlay_layer() {
 }
 EOF
     info "Overlay layer installed at $VK_LAYER_JSON"
+
+    # 32-bit manifest: only when the 32-bit library was actually installed.
+    if [ -s "$LIB_DIR/lib32/libMangoHud.so" ]; then
+        local json_i386="$VK_DIR/MangoHud_overlay_unified_i386.json"
+        cat > "$json_i386" <<EOF
+{
+    "file_format_version" : "1.0.0",
+    "layer" : {
+      "name": "VK_LAYER_MANGOHUD_overlay_unified_i386",
+      "type": "GLOBAL",
+      "api_version": "1.3.0",
+      "library_path": "$LIB_DIR/lib32/libMangoHud.so",
+      "implementation_version": "1",
+      "description": "MangoHud fork unified overlay (menu Shift_R+F9) - per-game layer (32-bit)",
+      "functions": {
+         "vkGetInstanceProcAddr": "overlay_GetInstanceProcAddr",
+         "vkGetDeviceProcAddr": "overlay_GetDeviceProcAddr"
+      },
+      "enable_environment": {
+        "MANGOHUD_UNIFIED": "1"
+      },
+      "disable_environment": {
+        "DISABLE_MANGOHUD_UNIFIED": "1"
+      }
+    }
+}
+EOF
+        info "Overlay 32-bit layer installed at $json_i386"
+    fi
 }
 
 # --- 4/6 Install mangoverlay wrapper -----------------------------------------
