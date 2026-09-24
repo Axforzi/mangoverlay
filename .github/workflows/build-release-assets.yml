@@ -86,12 +86,22 @@ jobs:
       - name: Build lsfg-vk (with patches)
         run: |
           git clone --depth 1 https://git.lsfg-vk.dev/lsfg-vk.git /tmp/lsfg-vk
+          # A release must never ship without these patches: silently skipping
+          # one is how frame_limit disappeared from the v0.2.1 asset. The clone
+          # is always fresh here, so there is no "already patched" upgrade path
+          # to preserve -- a patch that does not apply means upstream moved and
+          # the patch must be regenerated. Fail hard instead of shipping broken.
           for patch in patches/*.patch; do
             [ -f "$patch" ] || continue
             if git -C /tmp/lsfg-vk apply --check "$patch" 2>/dev/null; then
               git -C /tmp/lsfg-vk apply "$patch"
-            elif ! git -C /tmp/lsfg-vk apply --reverse --check "$patch" 2>/dev/null; then
-              echo "WARN: $patch not cleanly applicable; keeping current tree state"
+              echo "Applied: $patch"
+            elif git -C /tmp/lsfg-vk apply --reverse --check "$patch" 2>/dev/null; then
+              echo "Already applied: $patch"
+            else
+              echo "ERROR: $patch does not apply cleanly to upstream $(git -C /tmp/lsfg-vk rev-parse --short HEAD)."
+              echo "Regenerate the patch against the current upstream revision and retry."
+              exit 1
             fi
           done
           cmake -S /tmp/lsfg-vk -B /tmp/lsfg-vk/build \
@@ -108,6 +118,15 @@ jobs:
             -DLSFGVK_BUILD_CLI=OFF \
             -DLSFGVK_BUILD_LAYER=ON
           cmake --build /tmp/lsfg-vk/build-x86 -j"$(nproc)"
+          # Defence in depth: prove the patched feature reached the compiled
+          # binaries, so a stale patch against moved upstream code can never
+          # produce a silently broken release again.
+          patched_libs=$(find /tmp/lsfg-vk/build /tmp/lsfg-vk/build-x86 -name 'liblsfg-vk-layer*.so')
+          [ -n "$patched_libs" ] || { echo "ERROR: no lsfg-vk layer libraries were built"; exit 1; }
+          for lib in $patched_libs; do
+            strings "$lib" | grep -q frame_limit \
+              || { echo "ERROR: frame_limit not compiled into $lib (patch 01 missing?)"; exit 1; }
+          done
 
       - name: Package assets
         run: |

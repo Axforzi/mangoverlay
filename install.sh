@@ -5,7 +5,7 @@
 #
 # Usage:
 #   One-liner (downloads the whole project and installs):
-#     curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.1/install.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.2/install.sh | bash
 #   Or from a local clone:
 #     ./install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]
 #                  [--install-deps] [--dll <path>] [--yes] [--force]
@@ -63,7 +63,7 @@ usage() {
     if [ -r "$0" ]; then sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
     else
         info "Usage:"
-        printf '   curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.1/install.sh | bash\n'
+        printf '   curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.2/install.sh | bash\n'
         printf '   install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]\n'
         printf '             [--install-deps] [--dll <path>] [--yes] [--force]\n'
         printf '             [--build] [--prefix <dir>] [--help]\n'
@@ -104,7 +104,7 @@ if [ ! -d "$(dirname -- "$0")/MangoHud" ]; then
     BOOT_REPO="Axforzi/mangoverlay"
     # Pinned to a release tag so the installer is reproducible: whoever runs
     # the one-liner (which points at this tag) also downloads the same tag.
-    BOOT_BRANCH="v0.2.1"
+    BOOT_BRANCH="v0.2.2"
     BOOT_URL="https://github.com/$BOOT_REPO/archive/refs/tags/$BOOT_BRANCH.tar.gz"
     if ! have curl && ! have wget; then
         die "Neither curl nor wget is available; cannot download the sources."
@@ -821,7 +821,11 @@ EOF
     # 32-bit layer: only when the host can compile -m32 (g++-multilib).
     # Upstream's MULTILIB_X86=ON renames the artifacts to *.x86.*; the CI
     # always ships this for prebuilt assets, local builds are best-effort.
-    if printf '' | g++ -m32 -x c++ -fsyntax-only - >/dev/null 2>&1; then
+    # A syntax-only probe is not enough: g++ parses -m32 fine but fails to LINK
+    # when the i686 dev libraries (crt1.o, libstdc++) are missing, which used to
+    # surface later as a confusing cmake configure error. Compile AND link a
+    # trivial program so a partial toolchain skips cleanly instead.
+    if printf 'int main(void){return 0;}\n' | g++ -m32 -x c++ - -o /dev/null >/dev/null 2>&1; then
         cmake -S "$LSFG_SRC" -B "$LSFG_SRC/build-x86" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_FLAGS=-m32 \
@@ -835,6 +839,24 @@ EOF
     else
         warn "No 32-bit toolchain (g++ -m32 unavailable); skipping the 32-bit lsfg-vk layer."
     fi
+
+    # The patches are what make frame_limit (and the hardened config parsing)
+    # exist at all. If they silently failed to apply -- upstream moved, or the
+    # context shifted -- the layer builds WITHOUT them and frame_limit becomes
+    # a no-op, exactly the v0.2.1 asset bug. Verify the compiled binaries
+    # instead of trusting git apply's exit code.
+    local built_libs
+    built_libs="$(find "$LSFG_SRC/build" "$LSFG_SRC/build-x86" \
+        -name 'liblsfg-vk-layer*.so' 2>/dev/null)"
+    if [ -z "$built_libs" ]; then
+        die "No lsfg-vk layer library was built; cannot verify patches/*.patch."
+    fi
+    local built_lib
+    for built_lib in $built_libs; do
+        if ! grep -aq frame_limit "$built_lib"; then
+            die "frame_limit is missing from $built_lib: the lsfg-vk patches did not apply (upstream moved?). Regenerate patches/*.patch and retry."
+        fi
+    done
     local lsfg_json_src="$PREFIX/.local/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"
     local lsfg_json="$VK_CONFIG_DIR/VkLayer_LSFGVK_frame_generation.json"
     local lsfg_lib=""
@@ -1043,7 +1065,7 @@ config_dll_and_configs() {
 fetch_prebuilt || true
 
 if [ "$SKIP_OVERLAY" -eq 0 ] && [ -z "$PREBUILT_DIR" ]; then
-    [ -d "$MANGO_SRC" ] || die "Overlay source not found: $MANGO_SRC. If you run this script in a directory without the project sources, rerun via 'curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.1/install.sh | bash'."
+    [ -d "$MANGO_SRC" ] || die "Overlay source not found: $MANGO_SRC. If you run this script in a directory without the project sources, rerun via 'curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.2/install.sh | bash'."
 fi
 
 HAS_PREVIOUS=0
