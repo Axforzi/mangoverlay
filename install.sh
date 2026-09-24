@@ -5,7 +5,7 @@
 #
 # Usage:
 #   One-liner (downloads the whole project and installs):
-#     curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.9/install.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.0/install.sh | bash
 #   Or from a local clone:
 #     ./install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]
 #                  [--install-deps] [--dll <path>] [--yes] [--force]
@@ -63,7 +63,7 @@ usage() {
     if [ -r "$0" ]; then sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
     else
         info "Usage:"
-        printf '   curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.9/install.sh | bash\n'
+        printf '   curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.0/install.sh | bash\n'
         printf '   install.sh [--skip-overlay] [--skip-lsfg] [--skip-deps]\n'
         printf '             [--install-deps] [--dll <path>] [--yes] [--force]\n'
         printf '             [--build] [--prefix <dir>] [--help]\n'
@@ -104,7 +104,7 @@ if [ ! -d "$(dirname -- "$0")/MangoHud" ]; then
     BOOT_REPO="Axforzi/mangoverlay"
     # Pinned to a release tag so the installer is reproducible: whoever runs
     # the one-liner (which points at this tag) also downloads the same tag.
-    BOOT_BRANCH="v0.1.9"
+    BOOT_BRANCH="v0.2.0"
     BOOT_URL="https://github.com/$BOOT_REPO/archive/refs/tags/$BOOT_BRANCH.tar.gz"
     if ! have curl && ! have wget; then
         die "Neither curl nor wget is available; cannot download the sources."
@@ -973,7 +973,7 @@ config_dll_and_configs() {
 fetch_prebuilt || true
 
 if [ "$SKIP_OVERLAY" -eq 0 ] && [ -z "$PREBUILT_DIR" ]; then
-    [ -d "$MANGO_SRC" ] || die "Overlay source not found: $MANGO_SRC. If you run this script in a directory without the project sources, rerun via 'curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.1.9/install.sh | bash'."
+    [ -d "$MANGO_SRC" ] || die "Overlay source not found: $MANGO_SRC. If you run this script in a directory without the project sources, rerun via 'curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.0/install.sh | bash'."
 fi
 
 HAS_PREVIOUS=0
