@@ -100,6 +100,14 @@ jobs:
             -DLSFGVK_BUILD_CLI=ON \
             -DLSFGVK_BUILD_LAYER=ON
           cmake --build /tmp/lsfg-vk/build -j"$(nproc)"
+          cmake -S /tmp/lsfg-vk -B /tmp/lsfg-vk/build-x86 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS=-m32 \
+            -DLSFGVK_LAYER_MULTILIB_X86=ON \
+            -DLSFGVK_BUILD_UI=OFF \
+            -DLSFGVK_BUILD_CLI=OFF \
+            -DLSFGVK_BUILD_LAYER=ON
+          cmake --build /tmp/lsfg-vk/build-x86 -j"$(nproc)"
 
       - name: Package assets
         run: |
@@ -113,6 +121,7 @@ jobs:
           cp MangoHud/build32/src/libMangoHud_shim.so "$PKG/overlay/lib32/"
           find /tmp/lsfg-vk/build -name 'liblsfg-vk-layer.so' -exec cp {} "$PKG/lsfg/" \;
           find /tmp/lsfg-vk/build -name 'lsfg-vk-cli' -exec cp {} "$PKG/lsfg/" \;
+          find /tmp/lsfg-vk/build-x86 -name 'liblsfg-vk-layer.x86.so' -exec cp {} "$PKG/lsfg/" \;
           test -s "$PKG/overlay/libMangoHud.so" || exit 1
           test -s "$PKG/overlay/libMangoHud_opengl.so" || exit 1
           test -s "$PKG/overlay/libMangoHud_shim.so" || exit 1
@@ -121,6 +130,8 @@ jobs:
           test -s "$PKG/overlay/lib32/libMangoHud_shim.so" || exit 1
           test -s "$PKG/lsfg/liblsfg-vk-layer.so" || exit 1
           test -s "$PKG/lsfg/lsfg-vk-cli" || exit 1
+          test -s "$PKG/lsfg/liblsfg-vk-layer.x86.so" || exit 1
+          file "$PKG/lsfg/liblsfg-vk-layer.x86.so" | grep -q 'ELF 32-bit' || exit 1
           tar -C "$PKG" -czf "/tmp/mangoverlay-assets-$TAG.tar.gz" overlay lsfg
           ls -lh /tmp/mangoverlay-assets-*
 

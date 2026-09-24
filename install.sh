@@ -679,6 +679,38 @@ install_lsfg() {
         install -m 755 "$PREBUILT_DIR/lsfg/liblsfg-vk-layer.so" "$prebuilt_lib"
         install -m 755 "$PREBUILT_DIR/lsfg/lsfg-vk-cli" "$BIN_DIR/lsfg-vk-cli"
 
+        # 32-bit games (e.g. Terraria via Proton/DXVK) use the Vulkan loader
+        # i386, which needs its own ELF32 lsfg layer. The CI ships it as
+        # liblsfg-vk-layer.x86.so; install it and its manifest only when the
+        # tarball contains it (older assets keep working x86_64-only).
+        local lsfg_x86_lib=""
+        if [ -d "$PREFIX/.local/lib64" ]; then
+            lsfg_x86_lib="$PREFIX/.local/lib64/liblsfg-vk-layer.x86.so"
+        else
+            lsfg_x86_lib="$PREFIX/.local/lib/liblsfg-vk-layer.x86.so"
+        fi
+        if [ -s "$PREBUILT_DIR/lsfg/liblsfg-vk-layer.x86.so" ]; then
+            mkdir -p "$(dirname "$lsfg_x86_lib")"
+            install -m 755 "$PREBUILT_DIR/lsfg/liblsfg-vk-layer.x86.so" "$lsfg_x86_lib"
+            cat > "$VK_CONFIG_DIR/VkLayer_LSFGVK_frame_generation.x86.json" <<EOF
+{
+  "file_format_version": "1.1.0",
+  "layer": {
+    "name": "VK_LAYER_LSFGVK_frame_generation_x86",
+    "description": "Lossless Scaling frame generation layer",
+    "implementation_version": "2",
+    "library_path": "$lsfg_x86_lib",
+    "type": "GLOBAL",
+    "api_version": "1.4.350",
+    "disable_environment": {
+      "DISABLE_LSFGVK": "1"
+    }
+  }
+}
+EOF
+            info "lsfg-vk 32-bit layer installed: $lsfg_x86_lib"
+        fi
+
         cat > "$VK_CONFIG_DIR/VkLayer_LSFGVK_frame_generation.json" <<EOF
 {
   "file_format_version": "1.1.0",
@@ -786,6 +818,23 @@ EOF
     # PRE-generation frames. We move it to the first directory the loader
     # scans ($XDG_CONFIG_HOME/vulkan/implicit_layer.d) and set the absolute
     # library_path post-install (lib64 on Fedora, lib on Debian).
+    # 32-bit layer: only when the host can compile -m32 (g++-multilib).
+    # Upstream's MULTILIB_X86=ON renames the artifacts to *.x86.*; the CI
+    # always ships this for prebuilt assets, local builds are best-effort.
+    if printf '' | g++ -m32 -x c++ -fsyntax-only - >/dev/null 2>&1; then
+        cmake -S "$LSFG_SRC" -B "$LSFG_SRC/build-x86" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS=-m32 \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX/.local" \
+            -DLSFGVK_LAYER_MULTILIB_X86=ON \
+            -DLSFGVK_BUILD_UI=OFF \
+            -DLSFGVK_BUILD_CLI=OFF \
+            -DLSFGVK_BUILD_LAYER=ON
+        cmake --build "$LSFG_SRC/build-x86" -j"$(nproc)"
+        cmake --install "$LSFG_SRC/build-x86"
+    else
+        warn "No 32-bit toolchain (g++ -m32 unavailable); skipping the 32-bit lsfg-vk layer."
+    fi
     local lsfg_json_src="$PREFIX/.local/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"
     local lsfg_json="$VK_CONFIG_DIR/VkLayer_LSFGVK_frame_generation.json"
     local lsfg_lib=""
@@ -813,6 +862,27 @@ EOF
     fi
 
     info "lsfg-vk installed at $PREFIX/.local (layer + cli)."
+
+    # 32-bit layer manifest: cmake --install placed it under
+    # $PREFIX/.local/share/vulkan with a relative library_path. Move it into
+    # the loader-first config dir and set the absolute library_path, exactly
+    # like the x86_64 manifest above (moving, not copying, guarantees two
+    # manifests with the same layer name never coexist there).
+    local lsfg_x86_lib="$(dirname "$lsfg_lib")/liblsfg-vk-layer.x86.so"
+    local lsfg_x86_json_src="$PREFIX/.local/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.x86.json"
+    local lsfg_x86_json="$VK_CONFIG_DIR/VkLayer_LSFGVK_frame_generation.x86.json"
+    if [ -n "$lsfg_lib" ] && [ -f "$lsfg_x86_lib" ]; then
+        mkdir -p "$VK_CONFIG_DIR"
+        if [ -f "$lsfg_x86_json_src" ]; then
+            mv -f "$lsfg_x86_json_src" "$lsfg_x86_json"
+        fi
+        if [ -f "$lsfg_x86_json" ]; then
+            sed -i "s|\"library_path\": \".*liblsfg-vk-layer\.so\"|\"library_path\": \"$lsfg_x86_lib\"|" "$lsfg_x86_json"
+            info "lsfg-vk 32-bit layer JSON at $lsfg_x86_json pointing to: $lsfg_x86_lib"
+        else
+            warn "lsfg-vk 32-bit JSON not found after install; create it manually."
+        fi
+    fi
 }
 
 # --- 6/6 Detect dll + configs ----------------------------------------------

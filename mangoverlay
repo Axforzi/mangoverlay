@@ -158,6 +158,7 @@ if [ "$1" = "uninstall" ]; then
    _bin_lsfg_cli="$_bin_dir/lsfg-vk-cli"
    _cfg_dir="$HOME/.config/lsfg-vk"
    _lsfg_json="$_vk_config/VkLayer_LSFGVK_frame_generation.json"
+   _lsfg_x86_json="$_vk_config/VkLayer_LSFGVK_frame_generation.x86.json"
    _lsfg_cache="${XDG_CACHE_HOME:-$HOME/.cache}/mangoverlay"
    _usr_bin_link="/usr/local/bin/mangoverlay"
 
@@ -220,6 +221,8 @@ if [ "$1" = "uninstall" ]; then
    [ -f "$_lib_root/liblsfg-vk-layer.x86.so" ] && rm -f -- "$_lib_root/liblsfg-vk-layer.x86.so"
    [ -f "$_lib64_root/liblsfg-vk-layer.so" ] && rm -f -- "$_lib64_root/liblsfg-vk-layer.so"
    [ -f "$_vk_dir/VkLayer_LSFGVK_frame_generation.json" ] && rm -f -- "$_vk_dir/VkLayer_LSFGVK_frame_generation.json"
+   [ -f "$_lsfg_x86_json" ] && rm -f -- "$_lsfg_x86_json" && printf 'removed %s\n' "$_lsfg_x86_json"
+   [ -f "$_vk_dir/VkLayer_LSFGVK_frame_generation.x86.json" ] && rm -f -- "$_vk_dir/VkLayer_LSFGVK_frame_generation.x86.json"
    rmdir "$_vk_dir" 2>/dev/null || true
    rmdir "$_vk_config" 2>/dev/null || true
    if [ -d "$_lsfg_cache" ]; then
