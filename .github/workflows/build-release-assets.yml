@@ -93,6 +93,11 @@ jobs:
           # the patch must be regenerated. Fail hard instead of shipping broken.
           for patch in patches/*.patch; do
             [ -f "$patch" ] || continue
+            # git -C changes directory before resolving the patch path, so a
+            # relative path is looked up inside the upstream clone and never
+            # found (this is what silently dropped the patches from v0.2.1).
+            # Resolve to an absolute path first.
+            patch="$(realpath "$patch")"
             if git -C /tmp/lsfg-vk apply --check "$patch" 2>/dev/null; then
               git -C /tmp/lsfg-vk apply "$patch"
               echo "Applied: $patch"
@@ -100,6 +105,8 @@ jobs:
               echo "Already applied: $patch"
             else
               echo "ERROR: $patch does not apply cleanly to upstream $(git -C /tmp/lsfg-vk rev-parse --short HEAD)."
+              echo "git apply diagnostics:"
+              git -C /tmp/lsfg-vk apply --check "$patch" 2>&1 | head -20
               echo "Regenerate the patch against the current upstream revision and retry."
               exit 1
             fi
