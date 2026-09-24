@@ -64,7 +64,7 @@ available (the HUD options and per-game env vars keep working normally).
 Downloads the project and installs everything in one shot:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.2/install.sh | bash
 ```
 
 The script detects it is not running from a local clone, downloads and
@@ -162,7 +162,7 @@ mangoverlay uninstall --purge-configs  # also removes your profiles
 Or via `curl` when the wrapper is broken or missing:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.1/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.2/uninstall.sh | bash
 ```
 
 By default your per-game configs (`~/.config/lsfg-vk/`) are **kept**; pass
