@@ -1886,35 +1886,39 @@ static VkResult overlay_CreateDevice(
    instance_data->vtable.GetPhysicalDeviceProperties(device_data->physical_device,
                                                      &device_data->properties);
 
-   /* shaderFloat16 is NOT a member of VkPhysicalDeviceFeatures. It lives in
-    * VkPhysicalDeviceVulkan11Features (core since Vulkan 1.1), or in
-    * VkPhysicalDeviceShaderFloat16Int8Features from VK_KHR_shader_float16_int8.
-    * So it has to be reached through a pNext chain on a Features2 query, and
-    * only when the instance is new enough to have Features2 at all. On anything
-    * older the flag stays at its default of true, which is the historical
-    * behaviour.
+   /* shaderFloat16 is NOT a member of VkPhysicalDeviceFeatures, and not of
+    * VkPhysicalDeviceVulkan11Features either. In vulkan_core.h it appears in
+    * exactly two structs:
+    *   - VkPhysicalDeviceVulkan12Features               (core, Vulkan 1.2)
+    *   - VkPhysicalDeviceShaderFloat16Int8Features      (VK_KHR_shader_float16_int8)
+    * so it has to be reached through a pNext chain on a Features2 query, and
+    * only on an instance new enough to expose it.
+    *
+    * Verified against Vulkan-Headers v1.2.158, the version MangoHud pins in
+    * subprojects/vulkan-headers.wrap. Note VK_API_VERSION_MAJOR and friends do
+    * NOT exist in that header; only the VK_VERSION_* macros do.
+    *
+    * Below Vulkan 1.2 the flag keeps its default of true, which is the
+    * historical behaviour, so nothing regresses on an old loader.
     *
     * The menu uses this to pick allow_fp16, and a wrong value there makes the
     * frame generation layer request a capability the device does not have. */
-   if (instance_data->api_version >= VK_API_VERSION_1_1) {
-      VkPhysicalDeviceVulkan11Features feats_11 = {
-         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES
+   if (instance_data->api_version >= VK_API_VERSION_1_2) {
+      VkPhysicalDeviceVulkan12Features feats_12 = {
+         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
       };
       VkPhysicalDeviceFeatures2 feats_2 = {
          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
       };
-      feats_2.pNext = &feats_11;
+      feats_2.pNext = &feats_12;
       instance_data->vtable.GetPhysicalDeviceFeatures2(device_data->physical_device,
                                                         &feats_2);
-      g_device_supports_fp16 = feats_11.shaderFloat16 == VK_TRUE;
+      g_device_supports_fp16 = feats_12.shaderFloat16 == VK_TRUE;
       SPDLOG_DEBUG("device {} shaderFloat16: {}",
                    device_data->properties.deviceName, g_device_supports_fp16);
    } else {
-      SPDLOG_DEBUG("instance api_version {}.{}.{} predates Vulkan 1.1; "
-                   "leaving shaderFloat16 assumed",
-                   VK_API_VERSION_MAJOR(instance_data->api_version),
-                   VK_API_VERSION_MINOR(instance_data->api_version),
-                   VK_API_VERSION_PATCH(instance_data->api_version));
+      SPDLOG_DEBUG("instance api_version {:#x} predates Vulkan 1.2; "
+                   "leaving shaderFloat16 assumed", instance_data->api_version);
    }
 
    VkLayerDeviceCreateInfo *load_data_info =
