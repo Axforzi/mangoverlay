@@ -80,6 +80,7 @@ Remove the installed files manually (paths assume prefix $PREFIX):
   sudo rm -f /usr/local/bin/mangoverlay
   # remove the mangoverlay installer PATH block from ~/.zshrc / ~/.bashrc
   # configs: ${XDG_CONFIG_HOME:-$HOME/.config}/lsfg-vk  (kept by default)
+  #   (conf.toml, env.conf and dll.path live there; --purge-configs removes all)
 EOF
 }
 
