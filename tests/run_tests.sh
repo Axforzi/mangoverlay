@@ -34,6 +34,10 @@ fi
 ( cd "$WORK" && ./test ) || rc=1
 
 echo
+echo "== install.sh conf.toml healing =="
+bash "$HERE/test_heal_dll_key.sh" "$ROOT/install.sh" || rc=1
+
+echo
 echo "== install.sh layer manifests =="
 bash "$HERE/test_install_manifests.sh" "$ROOT/install.sh" || rc=1
 

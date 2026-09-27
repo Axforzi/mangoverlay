@@ -1049,6 +1049,83 @@ write_dll_path() {
     info "Recorded lsfg-vk.dll path in $DLL_PATH_FILE"
 }
 
+# True when conf.toml's [global] section already carries a `dll` key.
+#
+# Any line starting with '[' ends the previous section, including [[profile]].
+# Matching only /^\[...\]/ would not close on [[profile]] (the inner '[' is
+# consumed by [^]]* and the trailing ']' then fails the end anchor), so a `dll`
+# key inside a profile would be mistaken for the global one.
+conf_toml_has_dll_key() {
+    awk '
+        /^[[:space:]]*\[/ {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            in_global = (line == "[global]")
+            next
+        }
+        in_global && /^[A-Za-z_][A-Za-z0-9_]*/ {
+            k = $0
+            sub(/[[:space:]]*=.*$/, "", k)
+            if (k == "dll") found = 1
+        }
+        END { exit(found ? 0 : 1) }
+    ' "$1"
+}
+
+# Add the `dll` key to an existing conf.toml that is missing it.
+#
+# Why this exists: the frame generation layer is only a loader. It resolves the
+# real shader library through lsfg-vk.dll, and with no `dll` key it searches the
+# Steam tree. A DLL kept anywhere else is never found, the layer still enters
+# the frame generation path, and the game freezes with no error at all.
+#
+# Why not just rewrite the file: conf.toml holds one [[profile]] per game, with
+# the multiplier, pacing and per-game env vars the user tuned. Overwriting it to
+# add one key would throw all of that away, so this only ever ADDS the key. A
+# `dll` the user set is never touched, profiles are never reordered, and an
+# install with no DLL resolved leaves the file exactly as it was.
+heal_conf_toml_dll_key() {
+    [ -f "$CONF_TOML" ] || return 0
+    [ -n "${DLL_PATH:-}" ] || return 0
+    [ -f "$DLL_PATH" ] || return 0
+
+    if conf_toml_has_dll_key "$CONF_TOML"; then
+        return 0
+    fi
+
+    if ! grep -q '^[[:space:]]*\[global\][[:space:]]*$' "$CONF_TOML"; then
+        warn "$CONF_TOML has no [global] section; cannot add the dll key."
+        warn "Add it by hand under [global]:"
+        printf '  dll = "%s"\n' "$DLL_PATH" >&2
+        return 0
+    fi
+
+    local tmp="$CONF_TOML.install.$$"
+    if ! awk -v dll="$DLL_PATH" '
+            { print }
+            /^[[:space:]]*\[global\][[:space:]]*$/ && !done {
+                print "dll = \"" dll "\""
+                done = 1
+            }
+        ' "$CONF_TOML" > "$tmp"; then
+        rm -f -- "$tmp"
+        warn "Could not rewrite $CONF_TOML; leaving it untouched."
+        return 1
+    fi
+
+    if ! mv -f -- "$tmp" "$CONF_TOML"; then
+        rm -f -- "$tmp"
+        warn "Could not replace $CONF_TOML; leaving it untouched."
+        return 1
+    fi
+
+    info "Added the missing dll key to $CONF_TOML:"
+    info "  dll = \"$DLL_PATH\""
+    info "Without it, frame generation freezes the game as soon as the"
+    info "multiplier goes above 1."
+}
+
 write_env_conf() {
     if [ -f "$ENV_CONF" ]; then
         warn "env.conf already exists; left untouched."
@@ -1111,6 +1188,7 @@ config_dll_and_configs() {
     fi
 
     write_conf_toml
+    heal_conf_toml_dll_key
     write_dll_path
     write_env_conf
 }
