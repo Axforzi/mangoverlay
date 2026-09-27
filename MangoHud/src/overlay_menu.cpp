@@ -480,6 +480,7 @@ find_profile_header_line(const std::vector<std::string>& lines, int profile_idx,
 
 /* Defined below, next to lsfg_create_profile_for. */
 static void lsfg_ensure_dll_key(std::vector<std::string>& lines);
+static void lsfg_ensure_fp16_key(std::vector<std::string>& lines);
 
 static bool
 apply_lsfg_change(int profile_idx, const std::string& key, const std::string& value)
@@ -512,6 +513,7 @@ apply_lsfg_change(int profile_idx, const std::string& key, const std::string& va
     * predates lsfg_ensure_dll_key). Only adds a missing key; never rewrites
     * one the user set. */
    lsfg_ensure_dll_key(s_lsfg.lines);
+   lsfg_ensure_fp16_key(s_lsfg.lines);
 
    const std::string tmp = path + ".mangohud.tmp";
    std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
@@ -707,6 +709,42 @@ lsfg_ensure_dll_key(std::vector<std::string>& lines)
    SPDLOG_INFO("lsfg-vk: recorded dll path in {}: {}", lsfg_config_path(), dll);
 }
 
+/* Make sure the [global] block carries an allow_fp16 value the running device
+ * can actually honour.
+ *
+ * The menu used to write "allow_fp16 = true" unconditionally. That is right for
+ * a GPU with native fp16 and wrong for one without: the units arrived with GCN5
+ * (Vega, 2017) and everything since, so Polaris (GCN4) and older report
+ * shaderFloat16 = false. Pointing the frame generation layer at half precision
+ * on such a device asks for a capability it does not have, and the failure is
+ * not a clean error.
+ *
+ * Only a MISSING key is added, mirroring lsfg_ensure_dll_key: a value the user
+ * set deliberately is never rewritten. A config that says true on a device
+ * without fp16 is reported in the menu instead (see draw_overlay_menu), so the
+ * user keeps the last word.
+ */
+static void
+lsfg_ensure_fp16_key(std::vector<std::string>& lines)
+{
+   size_t existing = 0;
+   if (find_global_key_line(lines, "allow_fp16", existing))
+      return;
+
+   const bool supported = device_supports_fp16();
+   size_t header = 0;
+   if (!find_global_header_line(lines, header)) {
+      SPDLOG_ERROR("lsfg-vk: no [global] block in {}, cannot record allow_fp16",
+                   lsfg_config_path());
+      return;
+   }
+
+   lines.insert(lines.begin() + (header + 1),
+                std::string("allow_fp16 = ") + (supported ? "true" : "false"));
+   SPDLOG_INFO("lsfg-vk: device shaderFloat16={}, wrote allow_fp16 = {}",
+               supported, supported ? "true" : "false");
+}
+
 /* Append a [[profile]] linked to the given active_in, everything off.
  * Returns its index in s_lsfg.profiles, or -1 on failure. When the config
  * file does not exist yet, a minimal lsfg-vk config is created from scratch
@@ -736,6 +774,7 @@ lsfg_create_profile_for(const std::string& active_in)
 
    /* A rebuilt [global] must keep working: carry the dll key over. */
    lsfg_ensure_dll_key(s_lsfg.lines);
+   lsfg_ensure_fp16_key(s_lsfg.lines);
 
    s_lsfg.lines.push_back("[[profile]]");
    s_lsfg.lines.push_back("active_in = \"" + active_in + "\"");
@@ -1959,9 +1998,19 @@ void draw_overlay_menu(struct overlay_params& params)
          size_t dll_idx = 0;
          const bool dll_configured =
             find_global_key_line(s_lsfg.lines, "dll", dll_idx);
+         /* allow_fp16 = true on a device reporting shaderFloat16 = false asks
+          * the layer for a capability the hardware lacks. Not a freeze on its
+          * own, so it is reported without touching the user's value. */
+         size_t fp16_idx = 0;
+         const bool fp16_on =
+            find_global_key_line(s_lsfg.lines, "allow_fp16", fp16_idx) &&
+            menu_toml_value(s_lsfg.lines[fp16_idx]) == "true";
          if (!dll_configured && s_lsfg.profiles[s_profile].multiplier > 1) {
             desc = "WARNING: no lsfg-vk.dll configured. x2+ will freeze the game. "
                    "Reinstall, or set dll in the [global] block of conf.toml";
+         } else if (fp16_on && !device_supports_fp16()) {
+            desc = "NOTE: allow_fp16 is on but this GPU reports no fp16 units. "
+                   "Set allow_fp16 = false in the [global] block of conf.toml";
          } else {
          switch (s_sel) {
          case 0:

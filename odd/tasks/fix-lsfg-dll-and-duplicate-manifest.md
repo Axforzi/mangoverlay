@@ -27,16 +27,23 @@ install. The Vulkan loader then reports on every process start:
 `Removing layer VK_LAYER_LSFGVK_frame_generation ... because it is a duplicate of`.
 Confirmed present on this machine.
 
+**Bug 3 - `allow_fp16` hardcoded.** The same rebuild path wrote
+`allow_fp16 = true` with no capability query anywhere in the menu. Half-precision
+compute needs native fp16 units, which arrived with GCN5 (Vega, 2017); GCN4 and
+older do not have them. This machine's Radeon RX 550 (POLARIS12) reports
+`shaderFloat16 = false`, so the written value asks the layer for something the
+hardware cannot do. Not the cause of the freeze, but the same class of bug: a
+value written without asking the device.
+
 ## Scope
 
 - `MangoHud/src/overlay_menu.cpp` - preserve and heal the `dll` key; warn when
   frame generation is enabled with no resolvable DLL.
+- `MangoHud/src/vulkan.cpp` + `overlay.h` - record whether the device reports
+  `shaderFloat16` so the menu stops hardcoding `allow_fp16 = true`.
 - `install.sh` - record the resolved DLL path for the menu; remove stale
   manifests at the source location on both the prebuilt and local-build paths.
 - `uninstall.sh` - remove the recorded DLL path file.
-
-Out of scope: the `allow_fp16` capability-query gap (a separate latent bug, real
-but not what froze the game).
 
 ## Tasks
 
@@ -48,6 +55,7 @@ but not what froze the game).
 - [x] T6 Warn in-game when FG is on but no DLL resolves
 - [x] T7 Clean the new state file in uninstall.sh
 - [x] T8 Verify: build the overlay, review the diff, clean the live duplicate
+- [x] T9 Query shaderFloat16 instead of hardcoding allow_fp16
 
 ## Constraints
 
@@ -85,19 +93,29 @@ the real code and not a copy of it.
   profile-scoped `dll` is not mistaken for a global one, `[global]` does not
   swallow a later table's keys, `MANGOVERLAY_LSFG_DLL` wins, a non-existent
   override falls through, and a dangling `dll.path` is not trusted.
+- 15/15 after the `allow_fp16` change, adding: a device reporting fp16 gets
+  `allow_fp16 = true`, one without gets `false`, a user-set value is kept in
+  both directions, both keys land inside `[global]`, and a missing `[global]`
+  header is reported instead of written past.
 - 8/8 assertions in the extracted `install.sh` test, including that manifests
   belonging to other projects are left alone and that the function is defined
   before both of its call sites.
 - Live: `VK_LOADER_DEBUG=warn vulkaninfo --summary` reported 74 duplicate LSFGVK
   warnings before and 0 after; exactly one manifest per layer name remains, in
   `~/.config/vulkan/implicit_layer.d/`.
+- Build-correctness reviewed by hand rather than by a compiler: the OpenGL target
+  compiles `overlay_menu.cpp` but not `vulkan.cpp` (`src/meson.build:229`), and
+  resolves the new symbol through `mangohud_static_lib`; the version script's
+  `local: *` does not matter because both objects land in the same output. The
+  dispatch-table name `GetPhysicalDeviceFeatures` matches the mapping already
+  used by `GetPhysicalDeviceProperties` and `GetPhysicalDeviceProperties2` in the
+  same function.
 
 ## Follow-ups not addressed here
 
-- `overlay_menu.cpp` still writes `allow_fp16 = true` without querying
-  `VkPhysicalDeviceFeatures::shaderFloat16`. Real bug on hardware without fp16
-  (this machine's RX 550 reports `shaderFloat16 = false`), but separate from the
-  freeze and worth its own change.
+- `device_supports_fp16()` keeps the last device created, so on a multi-GPU setup
+  it reflects whichever `vkCreateDevice` ran last. That matches the existing
+  `gpu` global, so it is consistent, but it is not per-adapter.
 - The `switch` in `draw_overlay_menu` was wrapped in an `else` without
   re-indenting its body, to keep the diff readable.
 - No automated test runs in CI. The extraction harness used here is not wired in;
