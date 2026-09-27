@@ -1,0 +1,22 @@
+name: test
+
+# Fast gate for the logic that fails silently.
+#
+# Separate from build-release-assets.yml on purpose: that workflow only runs on
+# release tags, which is far too late to learn that a value in conf.toml is
+# being written without asking the device. This one runs on every push and every
+# pull request, and needs nothing but a compiler, so it stays in the low seconds.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: tests/run_tests.sh

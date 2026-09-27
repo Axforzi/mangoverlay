@@ -44,6 +44,9 @@ value written without asking the device.
 - `install.sh` - record the resolved DLL path for the menu; remove stale
   manifests at the source location on both the prebuilt and local-build paths.
 - `uninstall.sh` - remove the recorded DLL path file.
+- `tests/` + `.github/workflows/test.yml` - a fast gate for the logic that
+  fails silently. All three bugs above compiled, read correctly and passed
+  review; only a runtime check catches that class.
 
 ## Tasks
 
@@ -56,6 +59,7 @@ value written without asking the device.
 - [x] T7 Clean the new state file in uninstall.sh
 - [x] T8 Verify: build the overlay, review the diff, clean the live duplicate
 - [x] T9 Query shaderFloat16 instead of hardcoding allow_fp16
+- [x] T10 Move the test harness into the repo and run it in CI
 
 ## Constraints
 
