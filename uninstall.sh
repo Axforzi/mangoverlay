@@ -9,7 +9,7 @@
 #
 # Usage:
 #   One-liner:
-#     curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.3/uninstall.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/master/uninstall.sh | bash
 #   Or from a local clone:
 #     ./uninstall.sh [--prefix <dir>] [--purge-configs] [--yes] [--help]
 #

@@ -64,7 +64,7 @@ available (the HUD options and per-game env vars keep working normally).
 Downloads the project and installs everything in one shot:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.3/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/master/install.sh | bash
 ```
 
 The script detects it is not running from a local clone, downloads and
@@ -72,6 +72,13 @@ extracts the latest project sources to a temp dir and runs the full
 installer from there. No `chmod +x` and no sudo needed for the base
 install; sudo is only asked for the optional build deps and the
 `/usr/local/bin` symlink (both can be skipped).
+
+This link follows `master`, so it always installs the newest release
+without the URL needing a bump. The version you get is decided inside
+the installer, not by the link: it downloads the source and the prebuilt
+binaries from the release tag recorded in `BOOT_BRANCH`. To pin a
+specific version, replace `master` in the URL with a tag such as
+`v0.2.3`.
 
 **Precompiled by default.** Each release ships prebuilt binaries
 (`mangoverlay-assets-<tag>.tar.gz`, built by the GitHub Actions workflow):
@@ -162,7 +169,7 @@ mangoverlay uninstall --purge-configs  # also removes your profiles
 Or via `curl` when the wrapper is broken or missing:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/v0.2.3/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Axforzi/mangoverlay/master/uninstall.sh | bash
 ```
 
 By default your per-game configs (`~/.config/lsfg-vk/`) are **kept**; pass
