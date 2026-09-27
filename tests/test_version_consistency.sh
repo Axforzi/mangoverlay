@@ -55,16 +55,25 @@ for f in README.md install.sh uninstall.sh; do
 done
 check $fail "every one-liner URL points at $BOOT"
 
-# BOOT_BRANCH must not point at a tag that does not exist: the one-liner would
-# 404 on the source download for every new user
-git -C "$ROOT" rev-parse -q --verify "refs/tags/$BOOT" >/dev/null 2>&1
-if [ $? -eq 0 ]; then
-   echo "PASS  tag $BOOT exists"
-elif [ "${ALLOW_UNTAGGED:-0}" = "1" ]; then
-   echo "SKIP  tag $BOOT does not exist yet (expected before tagging)"
+# The pinned tag must exist, and on a tag build it must be the tag being built.
+#
+# Only enforced on a tag ref. On a branch or on master the bump commit lands
+# before the tag is created, so a pin legitimately points at a tag that does not
+# exist yet; failing there would make this check fail on every single version
+# bump, and a check that always fails is a check people learn to ignore.
+#
+# On a tag ref the invariant is at its strongest and most valuable: that is
+# exactly the moment a BOOT_BRANCH left behind would ship a release installing
+# the previous version.
+REF_TYPE="${GITHUB_REF_TYPE:-branch}"
+REF_NAME="${GITHUB_REF_NAME:-}"
+if [ "$REF_TYPE" = "tag" ]; then
+   [ "$REF_NAME" = "$BOOT" ]
+   check $? "the tag being built ($REF_NAME) is the version every pin points at ($BOOT)"
+   git -C "$ROOT" rev-parse -q --verify "refs/tags/$BOOT" >/dev/null 2>&1
+   check $? "tag $BOOT exists, so the one-liner can fetch its source tarball"
 else
-   echo "FAIL  tag $BOOT does not exist; the one-liner would 404"
-   fail=1
+   echo "SKIP  tag existence not enforced on a $REF_TYPE ref (enforced on tag builds)"
 fi
 
 echo
