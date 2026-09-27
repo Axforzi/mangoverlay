@@ -38,6 +38,12 @@ echo "== install.sh layer manifests =="
 bash "$HERE/test_install_manifests.sh" "$ROOT/install.sh" || rc=1
 
 echo
+echo "== version references =="
+# before the tag exists, the "tag $BOOT exists" check cannot pass yet
+ALLOW_UNTAGGED="${ALLOW_UNTAGGED:-0}" \
+   bash "$HERE/test_version_consistency.sh" "$ROOT" || rc=1
+
+echo
 echo "== shell syntax =="
 for f in "$ROOT/install.sh" "$ROOT/uninstall.sh"; do
    if bash -n "$f"; then echo "PASS  $(basename "$f") parses"; else
