@@ -16,6 +16,10 @@ meson-logs/
 # layer-test: throwaway sanity checks con paths absolutos del sistema
 layer-test/
 
+# tests/: scratch del harness (lo normal es que se limpie solo al terminar)
+tests/lsfg-test-work/
+tests/extracted.inc
+
 # Misc
 *.log
 .DS_Store

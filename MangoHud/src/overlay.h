@@ -180,4 +180,10 @@ void update_fan();
 void next_hud_position();
 void horizontal_separator(struct overlay_params& params);
 void RenderOutlinedText(const char* text, ImU32 textColor);
+
+/* Whether the running device reports native fp16 compute (shaderFloat16).
+ * Defined in vulkan.cpp; always true on the OpenGL build, which never creates
+ * a Vulkan device and cannot use frame generation anyway. The lsfg-vk menu
+ * uses it to pick allow_fp16 instead of hardcoding a value. */
+bool device_supports_fp16();
 #endif //MANGOHUD_OVERLAY_H

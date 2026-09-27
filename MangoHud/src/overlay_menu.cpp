@@ -262,6 +262,90 @@ lsfg_config_path()
    return "/etc/lsfg-vk/conf.toml";
 }
 
+/* Directory holding the lsfg-vk config, for sibling state files. */
+static std::string
+lsfg_config_dir()
+{
+   std::string p = lsfg_config_path();
+   size_t slash = p.find_last_of('/');
+   return slash == std::string::npos ? std::string() : p.substr(0, slash);
+}
+
+static bool
+lsfg_file_exists(const std::string& path)
+{
+   std::error_code ec;
+   return !path.empty() && std::filesystem::is_regular_file(path, ec);
+}
+
+/* First line of `path`, trimmed. Empty when the file is missing or blank. */
+static std::string
+lsfg_read_first_line(const std::string& path)
+{
+   std::ifstream in(path);
+   if (!in)
+      return "";
+   std::string line;
+   if (!std::getline(in, line))
+      return "";
+   return menu_trim(line);
+}
+
+/* Resolve the lsfg-vk.dll used by the frame generation layer.
+ *
+ * Without it the layer has no shader library: it searches the Steam tree on its
+ * own, and when the DLL lives anywhere else the layer still enters the frame
+ * generation path and the game freezes with no error. So the menu needs the
+ * same path install.sh resolved, searched in this order:
+ *
+ *   1. MANGOVERLAY_LSFG_DLL  explicit override, always wins
+ *   2. <config dir>/dll.path the path install.sh recorded (survives a config
+ *                         rebuild, which is the whole point)
+ *   3. Steam / XDG          mirrors install.sh find_dll_in_steam()
+ *
+ * Returns an empty string when nothing is found; callers must treat that as
+ * "frame generation unavailable", not as "default path".
+ */
+static std::string
+lsfg_find_dll()
+{
+   if (const char* env = getenv("MANGOVERLAY_LSFG_DLL"))
+      if (*env && lsfg_file_exists(env))
+         return env;
+
+   const std::string cfg_dir = lsfg_config_dir();
+   if (!cfg_dir.empty()) {
+      const std::string recorded = lsfg_read_first_line(cfg_dir + "/dll.path");
+      if (!recorded.empty() && lsfg_file_exists(recorded))
+         return recorded;
+   }
+
+   const char* home = getenv("HOME");
+   const std::string home_str = home ? home : "";
+   const char* xdg_data = getenv("XDG_DATA_HOME");
+   std::vector<std::string> prefixes;
+   if (xdg_data && *xdg_data)
+      prefixes.push_back(xdg_data);
+   if (!home_str.empty())
+      prefixes.push_back(home_str);
+
+   static const char* steam_rels[] = {
+      ".local/share/Steam/steamapps/common",
+      ".steam/steam/steamapps/common",
+      ".steam/debian-installation/steamapps/common",
+      ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common",
+      "snap/steam/common/.local/share/Steam/steamapps/common",
+   };
+   for (const auto& prefix : prefixes) {
+      for (const char* rel : steam_rels) {
+         const std::string cand = prefix + "/" + rel + "/Lossless Scaling/lsfg-vk.dll";
+         if (lsfg_file_exists(cand))
+            return cand;
+      }
+   }
+   return "";
+}
+
 static bool
 read_lsfg_config(LsfgConfig& cfg)
 {
@@ -337,6 +421,44 @@ find_profile_key_line(const std::vector<std::string>& lines, int profile_idx,
    return false;
 }
 
+/* Line index of `key` inside the [global] section, or false when absent.
+ * The [global] section is everything from its header up to the next header
+ * ([[profile]] or any [table]), so keys are only matched there. */
+static bool
+find_global_key_line(const std::vector<std::string>& lines,
+                     const std::string& key, size_t& out)
+{
+   bool in_global = false;
+   for (size_t i = 0; i < lines.size(); i++) {
+      std::string t = menu_trim(lines[i]);
+      if (t.rfind("[global]", 0) == 0) {
+         in_global = true;
+         continue;
+      }
+      /* any other table header ends the section */
+      if (in_global && !t.empty() && t.front() == '[')
+         return false;
+      if (in_global && menu_toml_key(t) == key) {
+         out = i;
+         return true;
+      }
+   }
+   return false;
+}
+
+/* Line index of the [global] header itself, or false when there is none. */
+static bool
+find_global_header_line(const std::vector<std::string>& lines, size_t& out)
+{
+   for (size_t i = 0; i < lines.size(); i++) {
+      if (menu_trim(lines[i]).rfind("[global]", 0) == 0) {
+         out = i;
+         return true;
+      }
+   }
+   return false;
+}
+
 /* Line index of the [[profile]] header of profile_idx */
 static bool
 find_profile_header_line(const std::vector<std::string>& lines, int profile_idx,
@@ -355,6 +477,10 @@ find_profile_header_line(const std::vector<std::string>& lines, int profile_idx,
    }
    return false;
 }
+
+/* Defined below, next to lsfg_create_profile_for. */
+static void lsfg_ensure_dll_key(std::vector<std::string>& lines);
+static void lsfg_ensure_fp16_key(std::vector<std::string>& lines);
 
 static bool
 apply_lsfg_change(int profile_idx, const std::string& key, const std::string& value)
@@ -382,6 +508,12 @@ apply_lsfg_change(int profile_idx, const std::string& key, const std::string& va
    } else {
       s_lsfg.lines[line_idx] = key + " = " + value;
    }
+
+   /* Heal a config that lost its dll key (older install, or a rebuild that
+    * predates lsfg_ensure_dll_key). Only adds a missing key; never rewrites
+    * one the user set. */
+   lsfg_ensure_dll_key(s_lsfg.lines);
+   lsfg_ensure_fp16_key(s_lsfg.lines);
 
    const std::string tmp = path + ".mangohud.tmp";
    std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
@@ -537,6 +669,82 @@ lsfg_find_matching_profile(const LsfgDetect& d)
    return -1;
 }
 
+/* Make sure the [global] block carries a usable `dll` key.
+ *
+ * Without it the frame generation layer has no shader library. It falls back to
+ * searching the Steam tree, does not find a DLL kept anywhere else, and the
+ * game freezes the moment the multiplier goes above 1 -- with no error
+ * anywhere. A rebuild of conf.toml used to drop the key silently, which is how
+ * a working setup broke on the next game added.
+ *
+ * An existing key is never touched: the user may have pointed it somewhere
+ * install.sh never searched. When no key exists, the path recorded by the
+ * installer is used, so a rebuilt config heals itself.
+ */
+static void
+lsfg_ensure_dll_key(std::vector<std::string>& lines)
+{
+   size_t existing = 0;
+   if (find_global_key_line(lines, "dll", existing))
+      return;
+
+   const std::string dll = lsfg_find_dll();
+   if (dll.empty()) {
+      SPDLOG_ERROR(
+         "lsfg-vk: no lsfg-vk.dll found, so frame generation will freeze the game "
+         "when the multiplier goes above 1. Set MANGOVERLAY_LSFG_DLL, or add "
+         "dll = \"/path/to/lsfg-vk.dll\" to the [global] block of {}",
+         lsfg_config_path());
+      return;
+   }
+
+   size_t header = 0;
+   if (!find_global_header_line(lines, header)) {
+      SPDLOG_ERROR("lsfg-vk: no [global] block in {}, cannot record the dll path",
+                   lsfg_config_path());
+      return;
+   }
+
+   lines.insert(lines.begin() + (header + 1), "dll = \"" + dll + "\"");
+   SPDLOG_INFO("lsfg-vk: recorded dll path in {}: {}", lsfg_config_path(), dll);
+}
+
+/* Make sure the [global] block carries an allow_fp16 value the running device
+ * can actually honour.
+ *
+ * The menu used to write "allow_fp16 = true" unconditionally. That is right for
+ * a GPU with native fp16 and wrong for one without: the units arrived with GCN5
+ * (Vega, 2017) and everything since, so Polaris (GCN4) and older report
+ * shaderFloat16 = false. Pointing the frame generation layer at half precision
+ * on such a device asks for a capability it does not have, and the failure is
+ * not a clean error.
+ *
+ * Only a MISSING key is added, mirroring lsfg_ensure_dll_key: a value the user
+ * set deliberately is never rewritten. A config that says true on a device
+ * without fp16 is reported in the menu instead (see draw_overlay_menu), so the
+ * user keeps the last word.
+ */
+static void
+lsfg_ensure_fp16_key(std::vector<std::string>& lines)
+{
+   size_t existing = 0;
+   if (find_global_key_line(lines, "allow_fp16", existing))
+      return;
+
+   const bool supported = device_supports_fp16();
+   size_t header = 0;
+   if (!find_global_header_line(lines, header)) {
+      SPDLOG_ERROR("lsfg-vk: no [global] block in {}, cannot record allow_fp16",
+                   lsfg_config_path());
+      return;
+   }
+
+   lines.insert(lines.begin() + (header + 1),
+                std::string("allow_fp16 = ") + (supported ? "true" : "false"));
+   SPDLOG_INFO("lsfg-vk: device shaderFloat16={}, wrote allow_fp16 = {}",
+               supported, supported ? "true" : "false");
+}
+
 /* Append a [[profile]] linked to the given active_in, everything off.
  * Returns its index in s_lsfg.profiles, or -1 on failure. When the config
  * file does not exist yet, a minimal lsfg-vk config is created from scratch
@@ -563,6 +771,10 @@ lsfg_create_profile_for(const std::string& active_in)
    } else {
       s_lsfg.lines.push_back("");
    }
+
+   /* A rebuilt [global] must keep working: carry the dll key over. */
+   lsfg_ensure_dll_key(s_lsfg.lines);
+   lsfg_ensure_fp16_key(s_lsfg.lines);
 
    s_lsfg.lines.push_back("[[profile]]");
    s_lsfg.lines.push_back("active_in = \"" + active_in + "\"");
@@ -1779,6 +1991,27 @@ void draw_overlay_menu(struct overlay_params& params)
       } else if (s_profile < 0) {
          desc = "No profile for this game yet; Enter creates one";
       } else if ((size_t)s_profile < s_lsfg.profiles.size()) {
+         /* A missing dll key is the one lsfg-vk failure that does not report
+          * itself: the layer finds no shader library and the game freezes with
+          * no error. Say so here, where the multiplier is being changed, rather
+          * than in a log nobody reads. */
+         size_t dll_idx = 0;
+         const bool dll_configured =
+            find_global_key_line(s_lsfg.lines, "dll", dll_idx);
+         /* allow_fp16 = true on a device reporting shaderFloat16 = false asks
+          * the layer for a capability the hardware lacks. Not a freeze on its
+          * own, so it is reported without touching the user's value. */
+         size_t fp16_idx = 0;
+         const bool fp16_on =
+            find_global_key_line(s_lsfg.lines, "allow_fp16", fp16_idx) &&
+            menu_toml_value(s_lsfg.lines[fp16_idx]) == "true";
+         if (!dll_configured && s_lsfg.profiles[s_profile].multiplier > 1) {
+            desc = "WARNING: no lsfg-vk.dll configured. x2+ will freeze the game. "
+                   "Reinstall, or set dll in the [global] block of conf.toml";
+         } else if (fp16_on && !device_supports_fp16()) {
+            desc = "NOTE: allow_fp16 is on but this GPU reports no fp16 units. "
+                   "Set allow_fp16 = false in the [global] block of conf.toml";
+         } else {
          switch (s_sel) {
          case 0:
             desc = "Multiplier: each game frame is launched N times (x2 => 120 fps from 60)";
@@ -1800,6 +2033,7 @@ void draw_overlay_menu(struct overlay_params& params)
             break;
          default:
             break;
+         }
          }
       }
    } else if (s_tab == MENU_TAB_HUD) {

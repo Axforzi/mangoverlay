@@ -157,6 +157,9 @@ BIN_MANGOVERLAY="$BIN_DIR/mangoverlay"
 CFG_DIR="$HOME/.config/lsfg-vk"
 CONF_TOML="$CFG_DIR/conf.toml"
 ENV_CONF="$CFG_DIR/env.conf"
+# Resolved lsfg-vk.dll path, kept outside conf.toml so the in-game menu can
+# restore the `dll` key when it rebuilds the config. See write_dll_path.
+DLL_PATH_FILE="$CFG_DIR/dll.path"
 LSFG_SRC="${XDG_CACHE_HOME:-$HOME/.cache}/mangoverlay/lsfg-vk"
 
 # --- Prebuilt assets (optional; the default is to use them) ------------------
@@ -658,12 +661,41 @@ install_wrapper() {
     fi
 }
 
+# Remove any LSFGVK manifest sitting at the cmake/source manifest dir
+# ($VK_DIR) so exactly one manifest per layer name exists after installing.
+#
+# Why this is needed: the manifest has to live in $VK_CONFIG_DIR
+# (~/.config/vulkan/implicit_layer.d) because the Vulkan loader scans that dir
+# before ~/.local/share, which is what makes LSFGVK load before MangoHud. cmake
+# --install writes the manifest to $VK_DIR, so the installer MOVES it. That move
+# only covers the file it just created: a manifest left there by an older
+# install (or placed by hand) survives, the loader then sees the same layer name
+# twice and discards one with a warning on every Vulkan process start:
+#   Removing layer VK_LAYER_LSFGVK_frame_generation (...) because it is a
+#   duplicate of VK_LAYER_LSFGVK_frame_generation (...)
+# Only manifests this project owns are touched.
+remove_stale_lsfg_manifests() {
+    local stale
+    for stale in "$VK_DIR/VkLayer_LSFGVK_frame_generation.json" \
+                 "$VK_DIR/VkLayer_LSFGVK_frame_generation.x86.json"; do
+        if [ -f "$stale" ]; then
+            rm -f -- "$stale" && info "removed stale duplicate manifest: $stale"
+        fi
+    done
+}
+
 # --- 5/6 Install lsfg-vk (always from upstream) -------------------------------
 install_lsfg() {
     CURRENT_STEP="5/6 install lsfg-vk upstream"
     step "5" "Install lsfg-vk (upstream)"
 
     if [ -n "$PREBUILT_DIR" ]; then
+        # A previous install (or a manual one) may have left an LSFGVK manifest
+        # at $VK_DIR, the cmake/source location. The loader keeps the first
+        # manifest per layer name and discards the rest with a warning on every
+        # process start, so remove the stale copy before writing ours.
+        remove_stale_lsfg_manifests
+
         # Precompiled assets: the CI workflow cloned upstream and applied the
         # patches, so we only place the library + cli and write the manifest
         # that cmake would have generated (with the absolute library_path the
@@ -860,6 +892,7 @@ EOF
     local lsfg_json_src="$PREFIX/.local/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"
     local lsfg_json="$VK_CONFIG_DIR/VkLayer_LSFGVK_frame_generation.json"
     local lsfg_lib=""
+    remove_stale_lsfg_manifests
     for cand in "$PREFIX/.local/lib64/liblsfg-vk-layer.so" "$PREFIX/.local/lib/liblsfg-vk-layer.so"; do
         if [ -f "$cand" ]; then lsfg_lib="$cand"; break; fi
     done
@@ -994,6 +1027,28 @@ TOML
     info "Created $CONF_TOML"
 }
 
+# Record the resolved lsfg-vk.dll path outside conf.toml.
+#
+# conf.toml can be rebuilt from scratch by the in-game menu when it is missing or
+# unreadable (MangoHud/src/overlay_menu.cpp, lsfg_create_profile_for), and the
+# rebuilt [global] block does not carry the `dll` key. The layer then searches
+# the Steam tree, does not find the DLL when it lives anywhere else, and the game
+# freezes as soon as frame generation is enabled. This file survives that
+# rebuild, so the menu can recover the path and put the key back.
+#
+# Written even when conf.toml already existed, so an existing config missing the
+# key can be healed on the next install.
+write_dll_path() {
+    [ -n "${DLL_PATH:-}" ] || return 0
+    [ -f "$DLL_PATH" ] || return 0
+    mkdir -p "$CFG_DIR"
+    if [ -f "$DLL_PATH_FILE" ] && [ "$(cat "$DLL_PATH_FILE" 2>/dev/null)" = "$DLL_PATH" ]; then
+        return 0
+    fi
+    printf '%s\n' "$DLL_PATH" > "$DLL_PATH_FILE"
+    info "Recorded lsfg-vk.dll path in $DLL_PATH_FILE"
+}
+
 write_env_conf() {
     if [ -f "$ENV_CONF" ]; then
         warn "env.conf already exists; left untouched."
@@ -1056,6 +1111,7 @@ config_dll_and_configs() {
     fi
 
     write_conf_toml
+    write_dll_path
     write_env_conf
 }
 

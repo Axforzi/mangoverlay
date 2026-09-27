@@ -69,6 +69,24 @@ float offset_x, offset_y, hudSpacing;
 int hudFirstRow, hudSecondRow;
 VkPhysicalDeviceDriverProperties driverProps = {};
 
+/* Whether the device we run on has native fp16 compute (shaderFloat16).
+ *
+ * Defaults to true so the OpenGL build, which never reaches
+ * overlay_CreateDevice, keeps the historical behaviour. It is also the right
+ * default for a modern GPU: shaderFloat16 arrived with GCN5 (Vega) and every
+ * architecture since. overlay_CreateDevice overwrites it with what the device
+ * actually reports.
+ *
+ * The in-game menu reads this to decide allow_fp16 instead of hardcoding it:
+ * GCN4 and older (Polaris, Fiji) have no fp16 units, so asking the layer to
+ * use half precision there is asking for something the hardware cannot do. */
+static bool g_device_supports_fp16 = true;
+
+bool device_supports_fp16()
+{
+   return g_device_supports_fp16;
+}
+
 #if !defined(_WIN32)
 namespace MangoHud { namespace GL {
    extern swapchain_stats sw_stats;
@@ -1867,6 +1885,17 @@ static VkResult overlay_CreateDevice(
 
    instance_data->vtable.GetPhysicalDeviceProperties(device_data->physical_device,
                                                      &device_data->properties);
+
+   /* shaderFloat16 is a core VkPhysicalDeviceFeatures member, so a plain
+    * vkGetPhysicalDeviceFeatures is enough. Record it once per device: the menu
+    * uses it to pick allow_fp16, and a wrong value there makes the frame
+    * generation layer request a capability the device does not have. */
+   VkPhysicalDeviceFeatures device_features = {};
+   instance_data->vtable.GetPhysicalDeviceFeatures(device_data->physical_device,
+                                                   &device_features);
+   g_device_supports_fp16 = device_features.shaderFloat16 != VK_FALSE;
+   SPDLOG_DEBUG("device {} shaderFloat16: {}", device_data->properties.deviceName,
+                g_device_supports_fp16);
 
    VkLayerDeviceCreateInfo *load_data_info =
       get_device_chain_info(pCreateInfo, VK_LOADER_DATA_CALLBACK);
