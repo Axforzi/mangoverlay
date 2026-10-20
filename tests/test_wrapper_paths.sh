@@ -49,6 +49,14 @@ EOF
 : > "$GAME_DIR/Some Game.exe"
 chmod +x "$GAME_DIR/Some Game.exe"
 
+run_cli() {
+   HOME="$HOME_DIR" \
+   XDG_CONFIG_HOME="$HOME_DIR/.config" \
+   MANGOVERLAY_ENV_CONF="$CONF_DIR/env.conf" \
+   PATH="/usr/bin:/bin" \
+   "$WRAPPER" "$@"
+}
+
 run_wrapper() {
    HOME="$HOME_DIR" \
    XDG_CONFIG_HOME="$HOME_DIR/.config" \
@@ -76,6 +84,33 @@ if command -v flock >/dev/null 2>&1; then
    [ -f "$CONF_DIR/.mangoverlay.lock" ]
    check $? "bootstrap takes the shared config lock"
 fi
+
+# --- clean-all is atomic and leaves a usable config ------------------------
+run_cli --clean-profiles --yes >/dev/null 2>&1
+[ ! -s "$CONF_DIR/env.conf" ]
+check $? "clean-all leaves env.conf empty"
+
+grep -q '^version = 2$' "$CONF_DIR/conf.toml" && \
+   ! grep -q '^\[\[profile\]\]$' "$CONF_DIR/conf.toml"
+check $? "clean-all keeps version/global and drops every profile"
+
+# --- regex metacharacters in section names --------------------------------
+# A '.' in a section name must be literal. The old pattern
+# "^\[Some Game.exe\]$" also matched the decoy "[Some GameXexe]".
+printf '[Some GameXexe]\nLSFGVK_PROFILE="Some GameXexe"\n' > "$CONF_DIR/env.conf"
+cat >> "$CONF_DIR/conf.toml" <<'EOF'
+
+[[profile]]
+active_in = "Some GameXexe"
+multiplier = 1
+name = "Some GameXexe"
+EOF
+run_wrapper
+grep -Fqx '[Some Game.exe]' "$CONF_DIR/env.conf"
+check $? "a dotted section name does not match a decoy (env.conf)"
+
+grep -Fqx 'active_in = "Some Game.exe"' "$CONF_DIR/conf.toml"
+check $? "a dotted section name does not match a decoy (conf.toml)"
 
 echo
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILED"

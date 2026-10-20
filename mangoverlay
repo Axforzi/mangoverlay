@@ -379,9 +379,11 @@ if [ "$1" = "--list-profiles" ] || [ "$1" = "--clean-profiles" ]; then
             *) printf 'aborted, nothing changed\n'; exit 1 ;;
          esac
       fi
-      # env.conf -> keep nothing (config is sections-only by design)
+      # env.conf -> keep nothing (config is sections-only by design).
+      # Truncate a temp file and rename it: a crash before the rename leaves
+      # the original intact instead of a half-empty config.
       config_lock_cli
-      : > "$ENV_CONF"
+      : > "$ENV_CONF.tmp" && mv "$ENV_CONF.tmp" "$ENV_CONF"
       # conf.toml -> keep version + [global] block, drop every [[profile]]
       awk '
          /^\[\[profile\]\]/ { skip = 1; next }
@@ -590,17 +592,17 @@ detect_section() {
    fi
    # 2. Steam Proton
    if [ -n "${STEAM_COMPAT_APP_NAME:-}" ]; then
-      if grep -q "^\[${STEAM_COMPAT_APP_NAME}\]$" "$ENV_CONF" 2>/dev/null; then
+      if grep -Fqx "[${STEAM_COMPAT_APP_NAME}]" "$ENV_CONF" 2>/dev/null; then
          printf '%s\n' "${STEAM_COMPAT_APP_NAME}"
          return
       fi
-      if grep -q "^\[${STEAM_COMPAT_APP_NAME}.exe\]$" "$ENV_CONF" 2>/dev/null; then
+      if grep -Fqx "[${STEAM_COMPAT_APP_NAME}.exe]" "$ENV_CONF" 2>/dev/null; then
          printf '%s\n' "${STEAM_COMPAT_APP_NAME}.exe"
          return
       fi
    fi
    # 2b. numeric SteamAppId (same rule as lsfg-vk)
-   if [ -n "${SteamAppId:-}" ] && grep -q "^\[${SteamAppId}\]$" "$ENV_CONF" 2>/dev/null; then
+   if [ -n "${SteamAppId:-}" ] && grep -Fqx "[${SteamAppId}]" "$ENV_CONF" 2>/dev/null; then
       printf '%s\n' "$SteamAppId"
       return
    fi
@@ -682,17 +684,17 @@ detect_section() {
           return
           ;;
     esac
-   if grep -q "^\[${_cmd}\]$" "$ENV_CONF" 2>/dev/null; then
+   if grep -Fqx "[$_cmd]" "$ENV_CONF" 2>/dev/null; then
       printf '%s\n' "$_cmd"
       return
    fi
    _with_exe="${_cmd}.exe"
-   if [ "$_with_exe" != "$_cmd" ] && grep -q "^\[${_with_exe}\]$" "$ENV_CONF" 2>/dev/null; then
+   if [ "$_with_exe" != "$_cmd" ] && grep -Fqx "[$_with_exe]" "$ENV_CONF" 2>/dev/null; then
       printf '%s\n' "$_with_exe"
       return
    fi
    _noexe=${_cmd%.exe}
-   if [ "$_noexe" != "$_cmd" ] && grep -q "^\[${_noexe}\]$" "$ENV_CONF" 2>/dev/null; then
+   if [ "$_noexe" != "$_cmd" ] && grep -Fqx "[$_noexe]" "$ENV_CONF" 2>/dev/null; then
       printf '%s\n' "$_noexe"
       return
    fi
@@ -701,25 +703,38 @@ detect_section() {
    # the [eden] section. Applies only when a section with the normalized name
    # exists; otherwise falls back to the literal basename (unchanged behavior).
    _norm=$(printf '%s' "$_cmd" | sed -E 's/\.(AppImage|appimage)$//; s/-v?[0-9]+\.[0-9]+(\.[0-9]+)?$//' | tr '[:upper:]' '[:lower:]')
-   if [ -n "$_norm" ] && [ "$_norm" != "$_cmd" ] && grep -q "^\[${_norm}\]$" "$ENV_CONF" 2>/dev/null; then
+   if [ -n "$_norm" ] && [ "$_norm" != "$_cmd" ] && grep -Fqx "[$_norm]" "$ENV_CONF" 2>/dev/null; then
       printf '%s\n' "$_norm"
       return
    fi
    printf '%s\n' "$_cmd"
 }
 
+# True when conf.toml already links a profile to section $1. Literal compare:
+# section names contain dots, which are wildcards inside a grep pattern.
+toml_has_active_in() {
+   awk -v sec="$1" '
+      /^active_in[[:space:]]*=[[:space:]]*"/ {
+         v = $0
+         sub(/^active_in[[:space:]]*=[[:space:]]*"/, "", v)
+         sub(/"[[:space:]]*$/, "", v)
+         if (v == sec) { found = 1; exit }
+      }
+      END { exit(found ? 0 : 1) }
+   ' "$_CONF_TOML"
+}
+
 # Bootstrap a game section in env.conf and its [[profile]] in conf.toml.
 # SECTION and _CONF_TOML must be set. Each append is skipped when the entry
 # already exists, so repeated launches are no-ops.
 bootstrap_config_section() {
-   if ! grep -q "^\[${SECTION}\]$" "$ENV_CONF" 2>/dev/null; then
+   if ! grep -Fqx "[$SECTION]" "$ENV_CONF" 2>/dev/null; then
       {
          printf '\n[%s]\n' "$SECTION"
          printf 'LSFGVK_PROFILE="%s"\n' "$SECTION"
       } >> "$ENV_CONF"
    fi
-   if [ -f "$_CONF_TOML" ] && \
-      ! grep -q '^active_in[[:space:]]*=[[:space:]]*"'"${SECTION}"'"$' "$_CONF_TOML" 2>/dev/null; then
+   if [ -f "$_CONF_TOML" ] && ! toml_has_active_in "$SECTION"; then
       {
          printf '\n[[profile]]\n'
          printf 'active_in = "%s"\n' "$SECTION"
