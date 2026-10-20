@@ -4,10 +4,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <sys/file.h>
 #include <unistd.h>
 #include <vector>
 
@@ -482,6 +484,53 @@ find_profile_header_line(const std::vector<std::string>& lines, int profile_idx,
 static void lsfg_ensure_dll_key(std::vector<std::string>& lines);
 static void lsfg_ensure_fp16_key(std::vector<std::string>& lines);
 
+/* Serialize read-modify-write of the lsfg-vk config files.
+ *
+ * Each individual write is atomic (tmp file + rename), but that alone does not
+ * stop a lost update: the menu reads conf.toml/env.conf, edits its copy, and
+ * renames it over the file while the launch wrapper may have appended a new
+ * section in between. The wrapper takes the same flock on
+ * <config-dir>/.mangoverlay.lock before its append, so both sides observe a
+ * consistent file.
+ *
+ * Best effort on purpose: if the lock cannot be created (read-only config dir,
+ * unsupported filesystem), the write proceeds exactly as before instead of
+ * turning a config edit into an error. */
+class ConfigWriteLock {
+ public:
+   explicit ConfigWriteLock(const std::string& config_path)
+   {
+      const std::string dir =
+         std::filesystem::path(config_path).parent_path().string();
+      if (dir.empty())
+         return;
+      const std::string lock_path = dir + "/.mangoverlay.lock";
+      fd = ::open(lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+      if (fd < 0) {
+         SPDLOG_WARN("Could not open config lock {}: {}", lock_path,
+                     strerror(errno));
+         return;
+      }
+      if (::flock(fd, LOCK_EX) != 0) {
+         SPDLOG_WARN("Could not lock {}: {}", lock_path, strerror(errno));
+         ::close(fd);
+         fd = -1;
+      }
+   }
+   ~ConfigWriteLock()
+   {
+      if (fd >= 0) {
+         ::flock(fd, LOCK_UN);
+         ::close(fd);
+      }
+   }
+   ConfigWriteLock(const ConfigWriteLock&) = delete;
+   ConfigWriteLock& operator=(const ConfigWriteLock&) = delete;
+
+ private:
+   int fd = -1;
+};
+
 static bool
 apply_lsfg_change(int profile_idx, const std::string& key, const std::string& value)
 {
@@ -489,6 +538,7 @@ apply_lsfg_change(int profile_idx, const std::string& key, const std::string& va
       return false;
 
    const std::string path = s_lsfg.path;
+   ConfigWriteLock lock(path);
 
    /* Re-read right before writing so a concurrent edit made by the lsfg GUI
     * is not clobbered with a stale copy. */
@@ -753,6 +803,7 @@ static int
 lsfg_create_profile_for(const std::string& active_in)
 {
    const std::string path = lsfg_config_path();
+   ConfigWriteLock lock(path);
 
    /* Re-read so a concurrent edit by the lsfg GUI is not clobbered. */
    if (!read_lsfg_config(s_lsfg)) {
@@ -1023,6 +1074,7 @@ apply_env_change(const std::string& sec, const std::string& key,
 {
    if (sec.empty())
       return false;
+   ConfigWriteLock lock(env_conf_path());
    if (!read_env_config() || !s_env.ok)
       return false;
 
@@ -1125,6 +1177,7 @@ env_clear_section()
    const std::string sec = env_active_section();
    if (sec.empty())
       return;
+   ConfigWriteLock lock(env_conf_path());
    if (!read_env_config() || !s_env.ok)
       return;
    size_t sec_idx = 0;
