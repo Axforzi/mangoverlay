@@ -129,8 +129,12 @@ printf '%s' "$out" | grep -q 'no \[global\] section'
 check $? "and says so"
 
 # 9. the healing is wired into the install sequence
-grep -q '^    heal_conf_toml_dll_key$' "$SRC"
+grep -qE '^[[:space:]]*heal_conf_toml_dll_key([[:space:]]|\|\|)' "$SRC"
 check $? "install.sh calls heal_conf_toml_dll_key in config_dll_and_configs"
+
+# 10. a failed heal must not abort the install (everything else is installed)
+grep -qE 'heal_conf_toml_dll_key[[:space:]]*\|\|[[:space:]]*warn' "$SRC"
+check $? "a failed heal is non-fatal"
 
 echo
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILED"

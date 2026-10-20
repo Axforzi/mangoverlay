@@ -276,6 +276,16 @@ fi
 if [ "$1" = "--list-profiles" ] || [ "$1" = "--clean-profiles" ]; then
    _CONF_TOML="$(dirname -- "$ENV_CONF")/conf.toml"
 
+   # Take the shared lsfg-vk config lock for the writing commands below. They
+   # exit right after writing, so keeping fd 9 until process exit is harmless;
+   # the launch path uses a subshell instead because the game would inherit an
+   # open fd (and with it, the lock) across exec.
+   config_lock_cli() {
+      command -v flock >/dev/null 2>&1 || return 0
+      exec 9>"$(dirname -- "$ENV_CONF")/.mangoverlay.lock" || return 0
+      flock 9 2>/dev/null || true
+   }
+
    # prints every [[profile]] in conf.toml, one line per profile
    _toml_list() {
       awk '
@@ -370,6 +380,7 @@ if [ "$1" = "--list-profiles" ] || [ "$1" = "--clean-profiles" ]; then
          esac
       fi
       # env.conf -> keep nothing (config is sections-only by design)
+      config_lock_cli
       : > "$ENV_CONF"
       # conf.toml -> keep version + [global] block, drop every [[profile]]
       awk '
@@ -383,6 +394,7 @@ if [ "$1" = "--list-profiles" ] || [ "$1" = "--clean-profiles" ]; then
 
    # named mode: remove each name from BOTH files together
    _removed=0
+   config_lock_cli
    for _name in "$@"; do
       [ "$_name" = "--yes" ] && continue
       _in_env=0; _in_toml=0
@@ -509,12 +521,22 @@ steam_appid_section() {
    if [ -f "$_default_manifest" ]; then
       _manifest="$_default_manifest"
    else
+      # libraryfolders.vdf can point at paths with spaces ("/mnt/My Games/
+      # SteamLibrary"). Split on newlines only, not on the default IFS, and
+      # disable globbing so a '*' in a path is not expanded.
+      _vdf="$HOME/.local/share/Steam/steamapps/libraryfolders.vdf"
+      _ifs_prev=$IFS
+      IFS='
+'
+      set -f
       for _lib in $(sed -n 's/.*"path"[[:space:]]*"\(.*\)".*/\1/p' \
-         "$HOME/.local/share/Steam/steamapps/libraryfolders.vdf" 2>/dev/null); do
+         "$_vdf" 2>/dev/null); do
          [ -f "$_lib/steamapps/appmanifest_${_aid}.acf" ] || continue
          _manifest="$_lib/steamapps/appmanifest_${_aid}.acf"
          break
       done
+      set +f
+      IFS=$_ifs_prev
    fi
    [ -n "$_manifest" ] || return
 
@@ -686,6 +708,33 @@ detect_section() {
    printf '%s\n' "$_cmd"
 }
 
+# Bootstrap a game section in env.conf and its [[profile]] in conf.toml.
+# SECTION and _CONF_TOML must be set. Each append is skipped when the entry
+# already exists, so repeated launches are no-ops.
+bootstrap_config_section() {
+   if ! grep -q "^\[${SECTION}\]$" "$ENV_CONF" 2>/dev/null; then
+      {
+         printf '\n[%s]\n' "$SECTION"
+         printf 'LSFGVK_PROFILE="%s"\n' "$SECTION"
+      } >> "$ENV_CONF"
+   fi
+   if [ -f "$_CONF_TOML" ] && \
+      ! grep -q '^active_in[[:space:]]*=[[:space:]]*"'"${SECTION}"'"$' "$_CONF_TOML" 2>/dev/null; then
+      {
+         printf '\n[[profile]]\n'
+         printf 'active_in = "%s"\n' "$SECTION"
+         printf 'flow_scale = 1.0\n'
+         printf 'frame_limit = 0\n'
+         printf 'multiplier = 1\n'
+         printf 'name = "%s"\n' "$SECTION"
+         printf 'override_present_mode = false\n'
+         printf 'pacing_mode = "vsync"\n'
+         printf 'performance_mode = false\n'
+         printf 'preserve_swapchain_image_count = false\n'
+      } >> "$_CONF_TOML"
+   fi
+}
+
 if [ -f "$ENV_CONF" ]; then
    SECTION="$(detect_section "$@")"
    if [ -n "$SECTION" ]; then
@@ -701,26 +750,15 @@ if [ -f "$ENV_CONF" ]; then
       # This preserves isolation: every game still gets its OWN section (there
       # is no [global]); only the declaration step is automated.
       _CONF_TOML="$(dirname -- "$ENV_CONF")/conf.toml"
-      if ! grep -q "^\[${SECTION}\]$" "$ENV_CONF" 2>/dev/null; then
-         {
-            printf '\n[%s]\n' "$SECTION"
-            printf 'LSFGVK_PROFILE="%s"\n' "$SECTION"
-         } >> "$ENV_CONF"
-      fi
-      if [ -f "$_CONF_TOML" ] && \
-         ! grep -q '^active_in[[:space:]]*=[[:space:]]*"'"${SECTION}"'"$' "$_CONF_TOML" 2>/dev/null; then
-         {
-            printf '\n[[profile]]\n'
-            printf 'active_in = "%s"\n' "$SECTION"
-            printf 'flow_scale = 1.0\n'
-            printf 'frame_limit = 0\n'
-            printf 'multiplier = 1\n'
-            printf 'name = "%s"\n' "$SECTION"
-            printf 'override_present_mode = false\n'
-            printf 'pacing_mode = "vsync"\n'
-            printf 'performance_mode = false\n'
-            printf 'preserve_swapchain_image_count = false\n'
-         } >> "$_CONF_TOML"
+      # The in-game menu rewrites both files with tmp+rename while holding the
+      # same flock. Without it, an append landing between the menu's read and
+      # its rename is silently overwritten. flock is best-effort: on a system
+      # without it (or a read-only config dir) the append still happens.
+      if command -v flock >/dev/null 2>&1; then
+         ( flock 9; bootstrap_config_section ) \
+            9>"$(dirname -- "$ENV_CONF")/.mangoverlay.lock"
+      else
+         bootstrap_config_section
       fi
       # if the game section has disable_all_vars, export nothing from it
       _sec_off="$(env_section_lines "$SECTION" | awk -F= '/^disable_all_vars[[:space:]]*=[[:space:]]*[Tt]rue/ { print "1"; exit }')"

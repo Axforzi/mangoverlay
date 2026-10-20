@@ -1192,7 +1192,11 @@ config_dll_and_configs() {
     fi
 
     write_conf_toml
-    heal_conf_toml_dll_key
+    # Best effort: the function already warns with the reason. Returning 1 here
+    # must not abort the install - by this point the libraries and the wrapper
+    # are in place, and the remaining steps (dll path, env.conf, summary) still
+    # matter. A config that cannot be rewritten is a report, not a fatal error.
+    heal_conf_toml_dll_key || warn "conf.toml could not be healed; continuing."
     write_dll_path
     write_env_conf
 }

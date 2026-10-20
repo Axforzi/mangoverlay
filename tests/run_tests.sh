@@ -42,6 +42,10 @@ echo "== install.sh layer manifests =="
 bash "$HERE/test_install_manifests.sh" "$ROOT/install.sh" || rc=1
 
 echo
+echo "== wrapper library discovery =="
+bash "$HERE/test_wrapper_paths.sh" "$ROOT" || rc=1
+
+echo
 echo "== version references =="
 bash "$HERE/test_version_consistency.sh" "$ROOT" || rc=1
 
