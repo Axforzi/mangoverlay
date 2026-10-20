@@ -26,7 +26,15 @@ jobs:
         run: tests/run_tests.sh
 
   compile:
+    name: compile (${{ matrix.arch }})
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # x86_64 is the common case; i386 covers 32-bit native games and
+        # Proton/DXVK titles (Terraria-style) that load the multilib layer.
+        # Both were release-tag-only before this gate existed.
+        arch: [x86_64, i386]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,10 +50,29 @@ jobs:
             python3-mako meson ninja-build g++ pkg-config glslang-tools \
             libx11-dev libdbus-1-dev libxnvctrl-dev libwayland-dev \
             libxkbcommon-dev libdrm-dev libpciaccess-dev libvulkan-dev
+          # 32-bit toolchain + dev headers, same set as build-release-assets.yml.
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -y
+          sudo apt-get install -y gcc-multilib g++-multilib \
+            libvulkan-dev:i386 libx11-dev:i386 libdbus-1-dev:i386 \
+            libwayland-dev:i386 libxkbcommon-dev:i386 libdrm-dev:i386 \
+            libpciaccess-dev:i386
 
       - name: Build overlay (x86_64)
+        if: matrix.arch == 'x86_64'
         run: |
           cd MangoHud
           meson setup build --buildtype=release -Dmangohudctl=true
           ninja -C build
           test -f build/src/libMangoHud.so || exit 1
+
+      - name: Build overlay (i386)
+        if: matrix.arch == 'i386'
+        run: |
+          cd MangoHud
+          meson setup build32 --cross-file build-cross-i386.ini \
+            --buildtype=release -Dmangohudctl=false \
+            -Dwith_xnvctrl=disabled -Dmangoplot=disabled
+          ninja -C build32
+          test -f build32/src/libMangoHud.so || exit 1
+          file build32/src/libMangoHud.so | grep -q 'ELF 32-bit' || exit 1
