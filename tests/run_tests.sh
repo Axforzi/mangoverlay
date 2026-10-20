@@ -23,9 +23,16 @@ rc=0
 
 echo "== lsfg-vk [global] handling =="
 bash "$HERE/extract_functions.sh" "$MENU_SRC" "$WORK/extracted.inc" || exit 1
-"$CXX" -std=c++17 -Wall -Wextra -I"$WORK" -o "$WORK/test" \
-   "$HERE/test_lsfg_global_keys.cpp" 2>"$WORK/build.log"
-if [ $? -ne 0 ] || grep -q ' error:' "$WORK/build.log"; then
+# Keep the compile inside an `if` condition: under `set -e` a failing command
+# outside one aborts the script before the block below can print build.log, and
+# the trap then deletes it. The old `[ $? -ne 0 ]` form never ran for that
+# reason, so a real compile error produced an empty CI log.
+compile_failed=0
+if ! "$CXX" -std=c++17 -Wall -Wextra -I"$WORK" -o "$WORK/test" \
+     "$HERE/test_lsfg_global_keys.cpp" 2>"$WORK/build.log"; then
+   compile_failed=1
+fi
+if [ "$compile_failed" -ne 0 ] || grep -q ' error:' "$WORK/build.log"; then
    echo "ERROR: the test harness failed to compile:" >&2
    cat "$WORK/build.log" >&2
    exit 1
