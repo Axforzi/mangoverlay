@@ -1,11 +1,15 @@
 name: test
 
-# Fast gate for the logic that fails silently.
+# Gate for the logic that fails silently, plus a compile gate for the fork.
 #
-# Separate from build-release-assets.yml on purpose: that workflow only runs on
-# release tags, which is far too late to learn that a value in conf.toml is
-# being written without asking the device. This one runs on every push and every
-# pull request, and needs nothing but a compiler, so it stays in the low seconds.
+# The `tests` job is deliberately light: it compiles the extracted functions on
+# its own and needs nothing but a compiler, so it stays in the low seconds.
+#
+# The `compile` job exists because build-release-assets.yml only runs on release
+# tags. Without it, a compile error in vulkan.cpp / overlay.cpp / gamepad.cpp
+# reaches master and is discovered only when a release is attempted. It mirrors
+# the x86_64 build from that workflow on purpose: same runner, same dependencies,
+# so the gate catches exactly what the release build would.
 on:
   push:
     branches: [master]
@@ -20,3 +24,28 @@ jobs:
 
       - name: Run tests
         run: tests/run_tests.sh
+
+  compile:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # meson's vcs_tag runs `git describe --tags`; a shallow clone has no
+          # tags and would fail the build for the wrong reason.
+          fetch-depth: 0
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            python3-mako meson ninja-build g++ pkg-config glslang-tools \
+            libx11-dev libdbus-1-dev libxnvctrl-dev libwayland-dev \
+            libxkbcommon-dev libdrm-dev libpciaccess-dev libvulkan-dev
+
+      - name: Build overlay (x86_64)
+        run: |
+          cd MangoHud
+          meson setup build --buildtype=release -Dmangohudctl=true
+          ninja -C build
+          test -f build/src/libMangoHud.so || exit 1
