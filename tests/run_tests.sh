@@ -41,6 +41,22 @@ fi
 ( cd "$WORK" && ./test ) || rc=1
 
 echo
+echo "== evdev gamepad reader =="
+# gamepad.cpp is self-contained (libc + linux/input.h), so the real compiled
+# implementation is linked instead of an extracted copy.
+compile_failed=0
+if ! "$CXX" -std=c++17 -Wall -Wextra -I"$ROOT/MangoHud/src" -o "$WORK/test_gamepad" \
+     "$HERE/test_gamepad.cpp" "$ROOT/MangoHud/src/gamepad.cpp" 2>"$WORK/build_gamepad.log"; then
+   compile_failed=1
+fi
+if [ "$compile_failed" -ne 0 ] || grep -q ' error:' "$WORK/build_gamepad.log"; then
+   echo "ERROR: the gamepad test harness failed to compile:" >&2
+   cat "$WORK/build_gamepad.log" >&2
+   exit 1
+fi
+"$WORK/test_gamepad" || rc=1
+
+echo
 echo "== install.sh conf.toml healing =="
 bash "$HERE/test_heal_dll_key.sh" "$ROOT/install.sh" || rc=1
 

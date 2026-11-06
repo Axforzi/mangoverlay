@@ -23,6 +23,12 @@ so:
   every process start. Invisible unless you go looking for loader warnings.
 - `allow_fp16` was hardcoded to `true` on devices with no fp16 units, which is
   a perfectly plausible-looking value that is simply wrong on the hardware.
+- A replugged controller came back on the same `/dev/input/eventN` path, so the
+  gamepad reader treated it as already open while its descriptor was dead. The
+  menu chord stayed dead until the game was restarted.
+- Holding that chord toggled the menu every 400 ms. Each toggle grabbed and
+  released the pad, the game lost the events produced in between, and the menu
+  cursor ended up running in the direction that was held.
 
 A compiler and a reviewer catch none of that. These tests do.
 
@@ -41,6 +47,10 @@ line above the signature, and the body ends at the first `}` in column 1. If tha
 ever stops holding, the script exits non-zero with a clear message rather than
 silently testing less than it claims.
 
+`gamepad.cpp` does not need that trick: it is self-contained (libc plus
+`linux/input.h`), so the harness compiles the real translation unit and links
+it, and nothing has to be extracted.
+
 ## What is covered
 
 `test_lsfg_global_keys.cpp` — the `[global]` block of `conf.toml`:
@@ -58,6 +68,13 @@ silently testing less than it claims.
 - stale 64-bit and 32-bit manifests are removed
 - manifests belonging to other projects are left alone
 - the function is defined before both of its call sites
+
+`test_gamepad.cpp` — the pure parts of the evdev gamepad reader:
+
+- a dead descriptor on a path that is still listed is closed and reopened
+- a live pad is not reopened on every rescan; a vanished one is dropped
+- the menu chord toggles on the press edge only, never while it is held
+- an axis reading clamps to -1/0/1 whether it is a hat or a full-scale stick
 
 Plus a parse check on `install.sh`, `uninstall.sh` and the `mangoverlay`
 wrapper, so a shell syntax error cannot reach a release.
