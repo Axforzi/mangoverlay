@@ -36,8 +36,16 @@ void check_keybinds(struct overlay_params& params){
    const auto keyPressDelay = 400ms;
 
    gamepad_poll();
-   if (elapsedMenu >= keyPressDelay &&
-       (keys_are_pressed(real_params->open_menu) || gamepad_chord_pressed())) {
+   /* Toggle on the press only. The chord (and the keyboard hotkey) report a
+    * level, so testing it directly with a 400 ms delay reopened and closed the
+    * menu about 2.5 times a second while the keys stayed down. Every toggle
+    * grabs and releases the pad with EVIOCGRAB, and the events produced inside
+    * that window never reach the game -- which is how the game under the menu
+    * ended up with a stuck direction. */
+   static bool menu_was_down = false;
+   const bool menu_down =
+       keys_are_pressed(real_params->open_menu) || gamepad_chord_pressed();
+   if (elapsedMenu >= keyPressDelay && gamepad_edge(menu_down, menu_was_down)) {
       menu_press = now;
       menu_toggle_open();
    }
